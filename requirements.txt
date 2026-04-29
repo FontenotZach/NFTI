@@ -1,0 +1,3 @@
+# Delegate to the application package lockfile (run `pip install -r requirements.txt`
+# from this repo root, or `cd NFTI && pip install -r requirements.txt` for the same effect).
+-r NFTI/requirements.txt

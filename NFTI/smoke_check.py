@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import csv
+import json
 import os
 
-import numpy as np
 import pandas as pd
 
 from src.TraumaDataset import TraumaDataset
-from src.preprocessing.feature_preprocessor import preprocess_data_for_criterion
+from src.preprocessing.feature_preprocessor import build_features_dataframe
 from src.models.xgboost_model import train_xgboost_model
-from src import Ensemble
-from src.paths import SCHEMAS_DIR, SAMPLES_DATA_DIR, ensure_dirs
+from src.config import TrainingConfig
+from src.paths import SCHEMAS_DIR, SAMPLES_DATA_DIR, REPORTS_DIR, ensure_dirs
+from src.data.temporal_derived import register_temporal_derived_headers
+from src.data.clinical_derived import register_clinical_derived_headers
 
 
 def load_header_definitions(csv_file_path: str) -> dict:
@@ -31,7 +33,6 @@ def load_header_definitions(csv_file_path: str) -> dict:
 
 
 def build_smoke_dataset(dataset_csv_path: str, *, n_rows: int = 250, add_custom: bool = True):
-    app_dir = os.path.dirname(__file__)
     ensure_dirs()
     header_csv_path = str(SCHEMAS_DIR / "header_definitions.csv")
     customs_csv_path = str(SCHEMAS_DIR / "customs.csv")
@@ -52,6 +53,9 @@ def build_smoke_dataset(dataset_csv_path: str, *, n_rows: int = 250, add_custom:
             one_hot_grouping=h.get("one_hot_grouping", ""),
             y=h.get("y", ""),
         )
+
+    register_temporal_derived_headers(ds, header_info)
+    register_clinical_derived_headers(ds, header_info)
 
     if add_custom:
         ds.add_custom_features(customs_csv_path)
@@ -75,25 +79,38 @@ def main():
 
     criterion = "nfti_positive"
 
-    print("Preprocessing (training subset)...")
-    Xb, Xc, Xcont, y = preprocess_data_for_criterion(ds, criterion, testing=False)
-    X_train = np.hstack((Xb, Xc, Xcont))
-    print(f"X_train shape: {X_train.shape}, y shape: {y.shape}")
+    cfg = TrainingConfig(
+        random_seed=42,
+        test_size=0.15,
+        grid_search=False,
+        cv_folds=3,
+    )
 
-    print("Training a fast XGBoost model (no grid search)...")
+    print("Training a fast XGBoost pipeline (no grid search)...")
     model = train_xgboost_model(
         ds,
         criterion,
-        grid_search=False,
-        use_smote=False,
-        test_size=0.2,
-        random_state=42,
+        config=cfg,
         log_filename=None,
     )
 
-    print("Preprocessing (testing subset) + XGBoost predict_proba shape checks...")
-    Xb_t, Xc_t, Xcont_t, _ = Ensemble.preprocess_data_for_criterion(criterion, ds, testing=True)
-    X_test = np.column_stack((Xb_t, Xc_t, Xcont_t))
+    reports = sorted(
+        REPORTS_DIR.glob(f"xgb_metrics_{criterion}_*.json"),
+        key=lambda p: p.stat().st_mtime,
+    )
+    assert reports, "Expected metrics JSON under artifacts/reports/"
+    with open(reports[-1], encoding="utf-8") as f:
+        rep = json.load(f)
+    ts = rep["threshold_selection"]
+    assert ts["threshold_selected_on"] == "train_cv_oof_predictions", (
+        f"Expected OOF threshold selection; got {ts!r}. "
+        "Try more rows / both classes in training."
+    )
+    assert ts["threshold_policy"] == "youden_j"
+
+    print("Holdout predict_proba shape checks...")
+    df = build_features_dataframe(ds)
+    X_test = df[df["for_testing"]].drop(columns=["for_testing"])
     prob = model.predict_proba(X_test)[:, 1]
     print(f"X_test shape: {X_test.shape}, prob shape: {prob.shape}")
 
@@ -115,4 +132,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

@@ -9,6 +9,7 @@ from src.TraumaDataset import TraumaDataset
 from test import show_testing_menu
 import csv
 import sys
+from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog
 import numpy as np
@@ -20,7 +21,13 @@ from sklearn.experimental import enable_iterative_imputer
 from sklearn.impute import IterativeImputer
 from sklearn.metrics import PrecisionRecallDisplay
 
-sys.path.append('src')
+# Resolve imports regardless of current working directory (must find src/ModelGen.py).
+_APP_ROOT = Path(__file__).resolve().parent
+_SRC_DIR = _APP_ROOT / "src"
+for _p in (_APP_ROOT, _SRC_DIR):
+    _s = str(_p)
+    if _s not in sys.path:
+        sys.path.insert(0, _s)
 import ModelGen
 import Ensemble
 
@@ -34,6 +41,10 @@ from src.paths import (
     SAMPLES_DATA_DIR,
     SCHEMAS_DIR,
 )
+from src.config import DEFAULT_TRAINING_CONFIG
+from src.splitting import assign_for_testing
+from src.data.temporal_derived import register_temporal_derived_headers
+from src.data.clinical_derived import register_clinical_derived_headers
 
 # Globals
 trauma_dataset = None
@@ -152,6 +163,9 @@ def pickle_data():
             y
         )
 
+    register_temporal_derived_headers(trauma_dataset, header_info)
+    register_clinical_derived_headers(trauma_dataset, header_info)
+
     if customs:
         print('Loading custom headers.')
         trauma_dataset.add_custom_features(customs)
@@ -168,6 +182,10 @@ def pickle_data():
     for _, row in df.iterrows():
         trauma_dataset.add_record(row)
     print(f"Records populated. Total records: {len(trauma_dataset.get_records())}")
+
+    if DEFAULT_TRAINING_CONFIG.assign_split_on_pickle:
+        assign_for_testing(trauma_dataset, config=DEFAULT_TRAINING_CONFIG)
+        print("Holdout split assigned (for_testing) using DEFAULT_TRAINING_CONFIG.")
 
     # Pickle dataset
     datasets_dir = PICKLES_DIR / "datasets"
@@ -856,6 +874,8 @@ def evaluate_testing_records_with_ensemble(trauma_dataset):
 
     from datetime import datetime
 
+    from src.preprocessing.feature_preprocessor import build_features_dataframe
+
     log_filename = f"log_ensemble_final_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
 
     # Extract the records flagged for testing
@@ -867,6 +887,9 @@ def evaluate_testing_records_with_ensemble(trauma_dataset):
 
     print(f"\n--- Running {len(testing_records)} Records through Ensemble Models ---\n")
 
+    df_all = build_features_dataframe(trauma_dataset)
+    test_df = df_all[df_all["for_testing"]].drop(columns=["for_testing"])
+
     # Initialize list to hold the meta-model inputs (XGBoost + NN predictions)
     meta_inputs = []
 
@@ -874,16 +897,16 @@ def evaluate_testing_records_with_ensemble(trauma_dataset):
     for criterion in models_xgboost.keys():
         print(f'Getting meta-model predictions for {criterion}...')
 
-        # Preprocess data for each criterion using the same method as during training
-        X_test_binary, X_test_cat, X_test_cont, _ = Ensemble.preprocess_data_for_criterion(criterion, trauma_dataset, testing=True)
-
-        # Get predictions from XGBoost
-        xgb_pred_prob = models_xgboost[criterion].predict_proba(np.column_stack((X_test_binary, X_test_cat, X_test_cont)))[:, 1]
+        # Get predictions from XGBoost (pipeline trained on raw feature columns).
+        xgb_pred_prob = models_xgboost[criterion].predict_proba(test_df)[:, 1]
 
         # Combine predictions from XGBoost and optional NN into the meta input
         meta_parts = [xgb_pred_prob.reshape(-1, 1)]
         nn_model = models_nn.get(criterion)
         if nn_model is not None:
+            X_test_binary, X_test_cat, X_test_cont, _ = Ensemble.preprocess_data_for_criterion(
+                criterion, trauma_dataset, testing=True
+            )
             nn_pred_prob = nn_model.predict([X_test_binary, X_test_cat, X_test_cont]).flatten()
             meta_parts.append(nn_pred_prob.reshape(-1, 1))
 
@@ -895,12 +918,10 @@ def evaluate_testing_records_with_ensemble(trauma_dataset):
     # Stack all the meta-model predictions as input for the final ensemble model
     final_meta_input = np.hstack(meta_inputs)
 
-    # Ensure the final meta input shape matches the expected input shape for the final model
-    if final_meta_input.shape[1] != final_model.input_shape[1]:
-        print(f"Shape mismatch for final model. Expected {final_model.input_shape[1]}, got {final_meta_input.shape[1]}")
+    expected_w = final_model.input_shape[1]
+    if expected_w is not None and final_meta_input.shape[1] != expected_w:
+        print(f"Shape mismatch for final model. Expected {expected_w}, got {final_meta_input.shape[1]}")
         return
-
-    print(f"Shape mismatch for final model. Expected {final_model.input_shape[1]}, got {final_meta_input.shape[1]}")
 
     # Get predicted probabilities for the final ensemble model
     final_pred_prob = final_model.predict(final_meta_input).flatten()

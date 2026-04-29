@@ -1,5 +1,3 @@
-import random
-
 from src.data.safe_arithmetic_eval import safe_eval_arithmetic
 
 class TraumaRecord:
@@ -9,7 +7,8 @@ class TraumaRecord:
         """
         self.data = data_row
         self.y = y
-        self.for_testing = random.random() < 0.15  # 5% chance
+        # Assigned once by src.splitting.assign_for_testing (single holdout source of truth).
+        self.for_testing = False
 
         self.calculate_custom_features(custom_features)
 
