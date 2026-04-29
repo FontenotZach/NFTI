@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# OS / editor
+.DS_Store
+.vscode/
+
+# Data and artifacts (avoid huge/derived outputs)
+NFTI/artifacts/
+NFTI/data/raw/
+
+# Keep schemas + samples tracked
+!NFTI/data/schemas/
+!NFTI/data/samples/
+
