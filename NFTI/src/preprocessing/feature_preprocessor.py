@@ -12,10 +12,6 @@ def _get_feature_column_groups(trauma_dataset) -> Tuple[List[str], List[str], Li
     categorical_cols: List[str] = []
     continuous_cols: List[str] = []
 
-    # Keep the same selection logic as the legacy code:
-    # - only headers with usage == "1"
-    # - only timing == "1"
-    # - map header.data_type to binary/categorical/continuous
     for header in trauma_dataset.get_headers():
         if header.usage == "1" and header.timing in ["1"]:
             if header.data_type == "1":
@@ -28,16 +24,54 @@ def _get_feature_column_groups(trauma_dataset) -> Tuple[List[str], List[str], Li
     return binary_cols, categorical_cols, continuous_cols
 
 
-def _build_feature_frame(trauma_dataset) -> pd.DataFrame:
-    # Column order must match the order used in TraumaDataset.add_record.
+def get_feature_column_groups(trauma_dataset):
+    """Public alias for column grouping used by pipelines and legacy paths."""
+    return _get_feature_column_groups(trauma_dataset)
+
+
+def _build_raw_record_feature_frame(trauma_dataset) -> pd.DataFrame:
+    """Feature columns only (all usage==1 with data_type); row order matches get_records()."""
     headers = [
         header.name
         for header in trauma_dataset.get_headers()
         if (header.data_type and header.usage == "1")
     ]
-
     all_rows = [list(record.data.values()) for record in trauma_dataset.get_records()]
     return pd.DataFrame(all_rows, columns=headers)
+
+
+def build_features_dataframe(trauma_dataset) -> pd.DataFrame:
+    """
+    Build a feature matrix as a DataFrame aligned with record order.
+
+    - Numeric columns: NaNs preserved where missing in source data.
+    - Categorical columns: strings or NaN.
+    - Includes ``for_testing`` for train/holdout masking (single source of truth).
+    """
+    binary_cols, categorical_cols, continuous_cols = _get_feature_column_groups(trauma_dataset)
+    rows = []
+    for record in trauma_dataset.get_records():
+        row: dict = {}
+        for c in binary_cols:
+            v = record.data.get(c, np.nan)
+            row[c] = pd.to_numeric(pd.Series([v]), errors="coerce").iloc[0]
+        for c in continuous_cols:
+            v = record.data.get(c, np.nan)
+            row[c] = pd.to_numeric(pd.Series([v]), errors="coerce").iloc[0]
+        for c in categorical_cols:
+            v = record.data.get(c, np.nan)
+            row[c] = np.nan if pd.isna(v) else str(v)
+        row["for_testing"] = bool(record.for_testing)
+        rows.append(row)
+    feat_cols = binary_cols + categorical_cols + continuous_cols
+    df = pd.DataFrame(rows)
+    return df[feat_cols + ["for_testing"]]
+
+
+def labels_for_criterion(trauma_dataset, criterion: str) -> np.ndarray:
+    """Binary labels aligned with get_records() order."""
+    y = np.array([r.y.get(criterion, np.nan) for r in trauma_dataset.get_records()])
+    return np.nan_to_num(y, nan=0.0).astype(int)
 
 
 def preprocess_data_for_criterion(
@@ -47,68 +81,62 @@ def preprocess_data_for_criterion(
     testing: bool,
 ):
     """
-    Shared preprocessing used by training and ensemble evaluation.
+    Legacy path: numpy blocks for non-pipeline code.
+
+    One-hot encoder is **fitted only on training rows** (not for_testing), then applied
+    to the requested subset — avoids leakage from held-out rows into category vocabulary.
 
     Returns:
-      X_binary: (n_samples, n_binary)
-      X_categorical: (n_samples, n_onehot)
-      X_continuous: (n_samples, n_continuous)
-      y: (n_samples,)
+      X_binary, X_categorical, X_continuous, y
     """
-
-    all_records = trauma_dataset.get_records()
-    mask = np.array([r.for_testing == testing for r in all_records], dtype=bool)
-
+    df = build_features_dataframe(trauma_dataset)
+    mask = df["for_testing"].eq(testing)
     if mask.sum() == 0:
         raise ValueError(f"No records found for testing={testing} (criterion={criterion}).")
 
-    df_all = _build_feature_frame(trauma_dataset)
-    df_sub = df_all.loc[mask].copy()
+    df_sub = df.loc[mask].drop(columns=["for_testing"]).copy()
+    df_train = df.loc[~df["for_testing"]].drop(columns=["for_testing"]).copy()
 
-    # Labels from the same record subset used for X.
-    y = np.array([r.y.get(criterion, 0) for r, keep in zip(all_records, mask) if keep])
+    all_records = trauma_dataset.get_records()
+    y = np.array(
+        [r.y.get(criterion, 0) for r, keep in zip(all_records, df["for_testing"].eq(testing)) if keep]
+    )
     y = np.nan_to_num(y, nan=0).astype(int)
 
     binary_cols, categorical_cols, continuous_cols = _get_feature_column_groups(trauma_dataset)
 
-    # Numeric conversion for binary/continuous.
     if binary_cols:
         X_binary = (
             df_sub[binary_cols]
             .apply(pd.to_numeric, errors="coerce")
-            .fillna(0)
-            .astype(int)
+            .astype(float)
             .values
         )
     else:
-        X_binary = np.zeros((len(df_sub), 0), dtype=np.int64)
+        X_binary = np.zeros((len(df_sub), 0), dtype=float)
 
     if continuous_cols:
         X_continuous = (
             df_sub[continuous_cols]
             .apply(pd.to_numeric, errors="coerce")
-            .fillna(0)
             .astype(float)
             .values
         )
     else:
         X_continuous = np.zeros((len(df_sub), 0), dtype=float)
 
-    # One-hot encoding for categorical columns with stable columns across calls.
     if categorical_cols:
         missing_token = "__MISSING__"
-
-        df_cat_all = df_all[categorical_cols].copy()
-        df_cat_all = df_cat_all.fillna(missing_token).astype(str)
+        df_cat_train = df_train[categorical_cols].copy()
+        df_cat_train = df_cat_train.fillna(missing_token).astype(str)
 
         df_cat_sub = df_sub[categorical_cols].copy()
         df_cat_sub = df_cat_sub.fillna(missing_token).astype(str)
 
         encoder = OneHotEncoder(handle_unknown="ignore", sparse_output=False)
-        encoder.fit(df_cat_all)
+        encoder.fit(df_cat_train)
         X_categorical = encoder.transform(df_cat_sub).astype(int)
     else:
         X_categorical = np.zeros((len(df_sub), 0), dtype=int)
 
     return X_binary, X_categorical, X_continuous, y
-

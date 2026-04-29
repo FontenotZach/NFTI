@@ -1,4 +1,6 @@
+import json
 import os
+import warnings
 from datetime import datetime
 import numpy as np
 import pandas as pd
@@ -24,8 +26,14 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 
 log_filename = f"log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
 
-from src.preprocessing.feature_preprocessor import preprocess_data_for_criterion as preprocess_data_for_criterion_shared
-from src.paths import FIGURES_DIR, LOGS_DIR, MODELS_KERAS_DIR, TUNING_DIR, ensure_dirs
+from src.config import DEFAULT_TRAINING_CONFIG
+from src.preprocessing.feature_preprocessor import (
+    build_features_dataframe,
+    labels_for_criterion,
+    preprocess_data_for_criterion as preprocess_data_for_criterion_shared,
+)
+from src.evaluation.metrics import THRESHOLD_SOURCE_FIXED_DEFAULT
+from src.paths import FIGURES_DIR, LOGS_DIR, MODELS_KERAS_DIR, REPORTS_DIR, TUNING_DIR, ensure_dirs
 
 def press_enter():
     print("\n\nPress enter to continue.")
@@ -551,6 +559,7 @@ def train_trauma_model_xgboost(trauma_dataset, metric_to_predict):
     best_xgb_model = train_xgboost_model(
         trauma_dataset,
         metric_to_predict,
+        config=DEFAULT_TRAINING_CONFIG,
         log_filename=log_filename,
     )
 
@@ -561,6 +570,37 @@ def train_trauma_model_xgboost(trauma_dataset, metric_to_predict):
     return best_xgb_model, X_holdout, y_holdout
 
 from sklearn.metrics import roc_curve, auc
+
+def _load_latest_train_derived_threshold(metric_to_predict: str):
+    """
+    Read threshold from the newest ``xgb_metrics_<criterion>_*.json`` written by training.
+
+    Returns:
+        (threshold, threshold_selected_on, threshold_policy) or (None, None, None) if missing/invalid.
+    """
+    ensure_dirs()
+    pattern = f"xgb_metrics_{metric_to_predict}_*.json"
+    reports = sorted(
+        REPORTS_DIR.glob(pattern),
+        key=lambda p: p.stat().st_mtime,
+    )
+    if not reports:
+        return None, None, None
+    try:
+        with open(reports[-1], encoding="utf-8") as f:
+            data = json.load(f)
+        ts = data.get("threshold_selection") or {}
+        thr = ts.get("threshold")
+        if thr is None:
+            return None, None, None
+        return (
+            float(thr),
+            ts.get("threshold_selected_on"),
+            ts.get("threshold_policy"),
+        )
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return None, None, None
+
 
 def plot_roc_curve(best_xgb_model, X_test, y_test, metric_to_predict):
     """
@@ -682,8 +722,8 @@ def test_with_threshold(threshold, threshold_name, metric_to_predict, testing_re
 
     evaluation_results = (
         f"\n--- {metric_to_predict} XGBoost Validation Set Model Evaluation ---\n"
-        f"Threshold Type: {threshold_name}\n"
-        f"Optimal Threshold: {threshold:.4f}\n"
+        f"Threshold selection source: {threshold_name}\n"
+        f"Applied threshold: {threshold:.4f}\n"
         f"Accuracy: {accuracy:.2f}%\n"
         f"Precision: {precision * 100:.2f}%\n"
         f"Recall (Sensitivity): {recall * 100:.2f}%\n"
@@ -703,29 +743,6 @@ def test_with_threshold(threshold, threshold_name, metric_to_predict, testing_re
     print(f"Evaluation results saved to {log_file_path}")
     print("\n")
 
-def get_middle_threshold(testing_records, metric_to_predict, y_pred_prob):
-    # Store the predictions and actual outcomes
-    nfti_positive_predictions = []
-    nfti_negative_predictions = []
-
-    for i, record in enumerate(testing_records):
-        prediction_prob = y_pred_prob[i]
-
-        actual_nfti_positive = record.y.get(metric_to_predict, 0)
-
-        if actual_nfti_positive == 1:
-            nfti_positive_predictions.append(prediction_prob)
-
-        else:
-            nfti_negative_predictions.append(prediction_prob)
-
-
-    # Calculate averages
-    avg_positive_prediction = np.mean(nfti_positive_predictions) if nfti_positive_predictions else 0
-    avg_negative_prediction = np.mean(nfti_negative_predictions) if nfti_negative_predictions else 0
-
-    return (avg_positive_prediction + avg_negative_prediction) / 2
-
 def test_all_testing_records_xgboost(model, trauma_dataset, metric_to_predict):
     global log_filename
     # Get records that are flagged for testing
@@ -737,42 +754,41 @@ def test_all_testing_records_xgboost(model, trauma_dataset, metric_to_predict):
 
     print(f"\n--- Testing on {len(testing_records)} Records ---\n")
 
-    # Use the shared preprocessing so XGBoost sees the same feature columns
-    # during training and evaluation.
-    X_binary, X_categorical, X_continuous, y_actual = preprocess_data_for_criterion_shared(
-        trauma_dataset, metric_to_predict, testing=True
+    df = build_features_dataframe(trauma_dataset)
+    hold_mask = df["for_testing"].values
+    X_test_df = df.loc[hold_mask].drop(columns=["for_testing"])
+    y_actual = labels_for_criterion(trauma_dataset, metric_to_predict)[hold_mask]
+
+    # sklearn / imblearn Pipeline expects the same feature matrix as training.
+    y_pred_prob = model.predict_proba(X_test_df)[:, 1]
+
+    thr, thr_src, thr_pol = _load_latest_train_derived_threshold(metric_to_predict)
+    if thr is None:
+        msg = (
+            f"No train-derived threshold found for {metric_to_predict!r} under {REPORTS_DIR} "
+            f"(pattern xgb_metrics_{metric_to_predict}_*.json). Using fixed threshold 0.5 for "
+            "thresholded debug metrics (threshold_selected_on=fixed_default_0_5)."
+        )
+        warnings.warn(msg, UserWarning)
+        print(f"[WARNING] {msg}")
+        thr = 0.5
+        thr_src = THRESHOLD_SOURCE_FIXED_DEFAULT
+        thr_pol = None
+
+    threshold_label = thr_src or "unknown"
+    if thr_pol:
+        threshold_label = f"{thr_src} ({thr_pol})"
+
+    print(
+        f"\nHoldout debug evaluation uses train-saved threshold only (no holdout tuning).\n"
+        f"  threshold={thr:.6f}  threshold_selected_on={thr_src!r}  policy={thr_pol!r}\n"
     )
-    X_test_data = np.hstack((X_binary, X_categorical, X_continuous))
 
-    # Predict probabilities using the XGBoost model
-    y_pred_prob = model.predict_proba(X_test_data)[:, 1]  # Probabilities for the positive class
+    test_with_threshold(thr, threshold_label, metric_to_predict, testing_records, y_pred_prob)
 
-    # Calculate the ROC curve and find the optimal threshold
+    plot_roc_curve(model, X_test_df, y_actual, metric_to_predict)
 
-    # Alternative threshold selection using F1-maximization
-    fpr, tpr, thresholds = roc_curve(y_actual, y_pred_prob)
-    f1_scores = [f1_score(y_actual, y_pred_prob >= t) for t in thresholds]
-    optimal_idx = np.argmax(f1_scores)
-    optimal_threshold_f = thresholds[optimal_idx]
-    print(f"Optimal threshold (f1): {optimal_threshold_f:.4f}")
-
-    optimal_idx = np.argmax(tpr - fpr)
-    optimal_threshold_ROC = thresholds[optimal_idx]
-    print(f"Optimal threshold (ROC): {optimal_threshold_ROC:.4f}")
-
-    middle_threshold = get_middle_threshold(testing_records, metric_to_predict, y_pred_prob)
-
-    print("\n")
-
-    test_with_threshold(optimal_threshold_f, "f-score", metric_to_predict, testing_records, y_pred_prob)
-
-    test_with_threshold(optimal_threshold_ROC, "ROC", metric_to_predict, testing_records, y_pred_prob)
-
-    test_with_threshold(middle_threshold, "Middle", metric_to_predict, testing_records, y_pred_prob)
-
-    plot_roc_curve(model, X_test_data, y_actual, metric_to_predict)
-
-    return X_test_data, y_actual
+    return X_test_df, y_actual
 
 def train_trauma_model(trauma_dataset, metric_to_predict):
     global log_filename

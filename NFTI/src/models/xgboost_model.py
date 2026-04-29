@@ -1,113 +1,232 @@
 from __future__ import annotations
 
-import os
+import json
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
+import joblib
+import numpy as np
 import xgboost as xgb
-from imblearn.over_sampling import SMOTE
-from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, roc_auc_score
-from sklearn.model_selection import GridSearchCV, StratifiedKFold, train_test_split
+from sklearn.base import clone
+from sklearn.model_selection import (
+    GridSearchCV,
+    StratifiedKFold,
+    cross_val_predict,
+    train_test_split,
+)
 
-from src.preprocessing.feature_preprocessor import preprocess_data_for_criterion
-from src.paths import LOGS_DIR, MODELS_XGBOOST_DIR, ensure_dirs
+from src.config import DEFAULT_TRAINING_CONFIG, METHODS_PREPROCESSING_LEAKAGE_SENTENCE, TrainingConfig
+from src.evaluation.metrics import (
+    THRESHOLD_POLICY_YOUDEN_J,
+    THRESHOLD_SOURCE_TRAIN_CV_OOF,
+    THRESHOLD_SOURCE_TRAIN_INTERNAL_VAL,
+    classification_metrics_dict,
+    format_metrics_log,
+    select_threshold_youden_j,
+)
+from src.paths import LOGS_DIR, MODELS_XGBOOST_DIR, REPORTS_DIR, ensure_dirs
+from src.preprocessing.feature_preprocessor import (
+    build_features_dataframe,
+    get_feature_column_groups,
+    labels_for_criterion,
+)
+from src.preprocessing.pipeline_factory import build_xgb_classifier_pipeline
+from src.splitting import ensure_assign_for_testing
+
+
+def _json_sanitize(obj: Any) -> Any:
+    if isinstance(obj, dict):
+        return {k: _json_sanitize(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_sanitize(x) for x in obj]
+    if isinstance(obj, (np.integer,)):
+        return int(obj)
+    if isinstance(obj, (np.floating,)):
+        return float(obj)
+    if isinstance(obj, float) and (np.isnan(obj) or np.isinf(obj)):
+        return None
+    return obj
+
+
+def _make_stratified_kfold(
+    y_train: np.ndarray, cfg: TrainingConfig
+) -> Tuple[Optional[StratifiedKFold], int]:
+    """Same minority-class-aware n_splits logic as GridSearchCV / OOF."""
+    counts = np.bincount(y_train, minlength=2)
+    min_class = int(counts.min())
+    n_splits = min(cfg.cv_folds, min_class)
+    if n_splits < 2:
+        return None, n_splits
+    return (
+        StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=cfg.random_seed),
+        n_splits,
+    )
+
+
+def _select_threshold_train_only_no_holdout_leakage(
+    best_model,
+    X_train,
+    y_train,
+    cfg: TrainingConfig,
+    cv_splitter: Optional[StratifiedKFold],
+) -> Tuple[float, str, str]:
+    """
+    Threshold from training data only.
+
+    Prefer out-of-fold probabilities from ``cross_val_predict`` on the training set.
+    If stratified K-fold is not possible (too few minority samples), use an internal
+    stratified train/validation split on training rows only.
+    """
+    if cv_splitter is not None:
+        oof_prob = cross_val_predict(
+            clone(best_model),
+            X_train,
+            y_train,
+            cv=cv_splitter,
+            method="predict_proba",
+            n_jobs=-1,
+        )[:, 1]
+        thr, policy = select_threshold_youden_j(y_train, oof_prob)
+        return thr, policy, THRESHOLD_SOURCE_TRAIN_CV_OOF
+
+    # Fallback: single stratified split inside training data (still no holdout use).
+    try:
+        X_tr, X_val, y_tr, y_val = train_test_split(
+            X_train,
+            y_train,
+            test_size=0.25,
+            stratify=y_train,
+            random_state=cfg.random_seed,
+        )
+    except ValueError:
+        # e.g. too few samples for stratification — conservative default
+        return 0.5, THRESHOLD_POLICY_YOUDEN_J, THRESHOLD_SOURCE_TRAIN_INTERNAL_VAL
+
+    inner = clone(best_model).fit(X_tr, y_tr)
+    val_prob = inner.predict_proba(X_val)[:, 1]
+    thr, policy = select_threshold_youden_j(y_val, val_prob)
+    return thr, policy, THRESHOLD_SOURCE_TRAIN_INTERNAL_VAL
 
 
 def train_xgboost_model(
     trauma_dataset,
     metric_to_predict: str,
     *,
-    grid_search: bool = True,
+    config: Optional[TrainingConfig] = None,
     param_grid: Optional[Dict] = None,
-    use_smote: bool = False,
-    test_size: float = 0.15,
-    random_state: int = 42,
     log_filename: Optional[str] = None,
 ):
+    """
+    Train an XGBoost model behind a leakage-safe sklearn/imblearn pipeline.
+
+    Train/holdout rows come **only** from ``TraumaRecord.for_testing`` (see ``assign_for_testing``).
+    Hyperparameter search uses training rows only. Classification threshold is chosen from
+    train-only out-of-fold predictions (or train-internal validation); holdout is used only
+    for final scoring with that frozen threshold (plus threshold-free metrics).
+    """
+    cfg = config or DEFAULT_TRAINING_CONFIG
     ensure_dirs()
+    ensure_assign_for_testing(trauma_dataset, config=cfg)
 
-    """
-    Train an XGBoost model for one criterion.
+    df = build_features_dataframe(trauma_dataset)
+    y_full = labels_for_criterion(trauma_dataset, metric_to_predict)
 
-    Returns:
-      fitted xgboost model
-    """
+    train_mask = ~df["for_testing"]
+    test_mask = df["for_testing"]
+    if train_mask.sum() == 0 or test_mask.sum() == 0:
+        raise ValueError(
+            "Train or holdout split is empty. Check assign_for_testing / test_size."
+        )
 
-    X_binary, X_categorical, X_continuous, y = preprocess_data_for_criterion(
-        trauma_dataset, metric_to_predict, testing=False
-    )
-    X_data = __import__("numpy").hstack((X_binary, X_categorical, X_continuous))
+    feature_cols = [c for c in df.columns if c != "for_testing"]
+    X_train = df.loc[train_mask, feature_cols].copy()
+    X_test = df.loc[test_mask, feature_cols].copy()
+    y_train = y_full[train_mask.to_numpy()]
+    y_test = y_full[test_mask.to_numpy()]
 
-    if param_grid is None:
-        param_grid = {
-            "max_depth": [3, 5],
-            "learning_rate": [0.1, 0.01],
-            "n_estimators": [100, 200],
-            "subsample": [1],
-            "colsample_bytree": [0.8, 1],
-            "gamma": [0, 0.2],
-            "reg_lambda": [1, 2],
-        }
-
-    X_resampled, y_resampled = X_data, y
-    if use_smote:
-        smote = SMOTE(random_state=random_state)
-        X_resampled, y_resampled = smote.fit_resample(X_data, y)
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X_resampled, y_resampled, test_size=test_size, random_state=random_state
+    binary_cols, categorical_cols, continuous_cols = get_feature_column_groups(trauma_dataset)
+    pipeline = build_xgb_classifier_pipeline(
+        binary_cols, categorical_cols, continuous_cols, cfg
     )
 
-    xgb_model = xgb.XGBClassifier(
-        objective="binary:logistic",
-        eval_metric="logloss",
-        n_jobs=-1,
-    )
+    grid = param_grid if param_grid is not None else cfg.xgb_param_grid
 
-    if grid_search:
-        stratified_kfold = StratifiedKFold(n_splits=3, shuffle=True, random_state=random_state)
+    unique_labels = np.unique(y_train)
+    if unique_labels.size < 2:
+        raise ValueError(
+            f"Training labels for {metric_to_predict} have only one class; cannot train classifier."
+        )
+
+    cv_splitter, _ = _make_stratified_kfold(y_train, cfg)
+    use_grid = bool(cfg.grid_search) and cv_splitter is not None
+
+    if use_grid:
         grid_search_cv = GridSearchCV(
-            estimator=xgb_model,
-            param_grid=param_grid,
-            scoring="roc_auc",
-            cv=stratified_kfold,
+            estimator=pipeline,
+            param_grid=grid,
+            scoring=cfg.primary_selection_metric,
+            cv=cv_splitter,
             n_jobs=-1,
-            verbose=2,
+            refit=True,
+            verbose=cfg.grid_search_verbose,
         )
         grid_search_cv.fit(X_train, y_train)
         best_model = grid_search_cv.best_estimator_
     else:
-        xgb_model.fit(X_train, y_train)
-        best_model = xgb_model
+        pipeline.fit(X_train, y_train)
+        best_model = pipeline
 
-    # Internal evaluation on the train_test_split holdout.
-    y_pred = best_model.predict(X_test)
-    y_pred_prob = best_model.predict_proba(X_test)[:, 1]
+    thr, thr_policy, thr_source = _select_threshold_train_only_no_holdout_leakage(
+        best_model, X_train, y_train, cfg, cv_splitter
+    )
 
-    accuracy = accuracy_score(y_test, y_pred)
-    precision = precision_score(y_test, y_pred)
-    recall = recall_score(y_test, y_pred)
-    f1 = f1_score(y_test, y_pred)
-    roc_auc = roc_auc_score(y_test, y_pred_prob)
+    y_score_test = best_model.predict_proba(X_test)[:, 1]
+
+    # Holdout: threshold-free (ROC-AUC, AP, Brier) plus discrete metrics at frozen train-derived threshold.
+    metrics_combined = classification_metrics_dict(
+        y_test, y_score_test, threshold=thr
+    )
+
+    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    report_path = (
+        REPORTS_DIR
+        / f"xgb_metrics_{metric_to_predict}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    )
+    payload = {
+        "criterion": metric_to_predict,
+        "methods_note": METHODS_PREPROCESSING_LEAKAGE_SENTENCE,
+        "threshold_selection": {
+            "threshold": float(thr),
+            "threshold_policy": thr_policy,
+            "threshold_selected_on": thr_source,
+        },
+        "metrics": _json_sanitize(metrics_combined),
+    }
+    with open(report_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
 
     if log_filename:
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
-        with open(LOGS_DIR / log_filename, "a") as f:
+        with open(LOGS_DIR / log_filename, "a", encoding="utf-8") as f:
+            f.write(f"\n{METHODS_PREPROCESSING_LEAKAGE_SENTENCE}\n")
             f.write(
-                "\n"
-                f"--- {metric_to_predict} XGBoost Test Set Model Evaluation ---\n"
-                f"Accuracy: {accuracy * 100:.2f}%\n"
-                f"Precision: {precision * 100:.2f}%\n"
-                f"Recall (Sensitivity): {recall * 100:.2f}%\n"
-                f"F1 Score: {f1 * 100:.2f}%\n"
-                f"ROC AUC: {roc_auc:.4f}\n"
+                f"threshold={thr:.6f} policy={thr_policy} selected_on={thr_source}\n"
+            )
+            f.write(
+                format_metrics_log(
+                    metrics_combined,
+                    f"{metric_to_predict} XGBoost holdout (for_testing) evaluation",
+                )
             )
 
-    # Save the trained XGBoost model.
     MODELS_XGBOOST_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    model_path = MODELS_XGBOOST_DIR / f"xgboost_model_{timestamp}_{metric_to_predict}.json"
-    best_model.save_model(str(model_path))
+    pipeline_path = MODELS_XGBOOST_DIR / f"xgb_pipeline_{timestamp}_{metric_to_predict}.joblib"
+    joblib.dump(best_model, pipeline_path)
+
+    xgb_step = best_model.named_steps.get("xgb")
+    if isinstance(xgb_step, xgb.XGBClassifier):
+        json_path = MODELS_XGBOOST_DIR / f"xgboost_model_{timestamp}_{metric_to_predict}.json"
+        xgb_step.save_model(str(json_path))
 
     return best_model
-
