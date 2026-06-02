@@ -2,9 +2,9 @@
 
 Use this as a checklist for local experiments.
 
-**Where things live:** This repo has a **nested layout**: the full dependency pin list is only at **`NFTI/requirements.txt`** (inside the inner `NFTI/` folder next to `app.py`). The **repository root** also has a thin **`requirements.txt`** that includes that file, so `pip install -r requirements.txt` works from **either** directory.
+**Where things live:** Dependencies are pinned in **`requirements.txt`** at the repository root (same directory as `app.py`).
 
-If you see **`ERROR: Could not open requirements file`**, you are probably in a folder with no `requirements.txt` (e.g. `docs/`). Run `pwd` and `ls requirements.txt`, then either `cd` to repo root or `cd NFTI` (inner).
+If you see **`ERROR: Could not open requirements file`**, you are probably in a folder with no `requirements.txt` (e.g. `docs/`). Run `pwd` and `ls requirements.txt`, then `cd` to repo root.
 
 ---
 
@@ -12,20 +12,10 @@ If you see **`ERROR: Could not open requirements file`**, you are probably in a 
 
 Create a virtual environment and install dependencies **once** per machine.
 
-**Option A — from repository root** (directory that contains `docs/` and the inner `NFTI/`):
+**From repository root** (directory that contains `docs/`, `src/`, `data/`, and `app.py`):
 
 ```bash
 cd /path/to/your/NFTI-clone    # repo root
-python3 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
-```
-
-**Option B — from application package** (directory that contains `app.py`, `smoke_check.py`, `src/`):
-
-```bash
-cd /path/to/your/NFTI-clone/NFTI
 python3 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip
@@ -41,13 +31,13 @@ pip install -r requirements.txt
 Runs the bundled sample CSV, builds the dataset (including custom features and derived temporal/clinical columns registered from `header_definitions.csv`), trains an XGBoost pipeline, and performs basic assertions.
 
 ```bash
-cd /path/to/your/NFTI-clone/NFTI     # inner package: contains smoke_check.py
+cd /path/to/your/NFTI-clone         # repo root: contains smoke_check.py
 source .venv/bin/activate            # if using venv
 
 python smoke_check.py
 ```
 
-Artifacts (relative to **inner** `NFTI/`):
+Artifacts (relative to repo root):
 
 - Metrics JSON under `artifacts/reports/` (`xgb_metrics_nfti_positive_*.json`).
 - Other outputs under `artifacts/` per `src/paths.py`.
@@ -55,7 +45,7 @@ Artifacts (relative to **inner** `NFTI/`):
 To train on **more rows** of the sample file, edit `smoke_check.py` (`n_rows=200`) or run a one-off:
 
 ```bash
-cd /path/to/your/NFTI-clone/NFTI
+cd /path/to/your/NFTI-clone
 python -c "
 from pathlib import Path
 from smoke_check import build_smoke_dataset
@@ -76,7 +66,7 @@ print('done')
 Full menu: pickle dataset → train models → imputation → exports (see `README.md` menu map).
 
 ```bash
-cd /path/to/your/NFTI-clone/NFTI
+cd /path/to/your/NFTI-clone
 source .venv/bin/activate
 
 python app.py
@@ -89,7 +79,7 @@ Typical sequence:
 3. **Train** via menu item **4** (ModelGen paths).
 4. Toggle **testing mode** (menu **8**) when you want a held-out slice while iterating.
 
-> **WSL / headless:** Tkinter file dialogs require a display. On WSL, use WSLg, an X server, or copy your CSV into `NFTI/data/samples/` and temporarily point smoke/scripts at it instead of the GUI.
+> **WSL / headless:** Tkinter file dialogs require a display. On WSL, use WSLg, an X server, or copy your CSV into `data/samples/` and temporarily point smoke/scripts at it instead of the GUI.
 
 ---
 
@@ -98,7 +88,7 @@ Typical sequence:
 Loads a **pickled** `TraumaDataset` and a **Keras** model file. Prepare artifacts first (pickle + train/export NN model), then:
 
 ```bash
-cd /path/to/your/NFTI-clone/NFTI
+cd /path/to/your/NFTI-clone
 source .venv/bin/activate
 
 python test.py
@@ -106,7 +96,7 @@ python test.py
 
 Defaults expected by the script (adjust paths inside `test.py` if yours differ):
 
-- Pickled dataset: `artifacts/pickles/datasets/trauma_dataset.pkl` (under inner `NFTI/`)
+- Pickled dataset: `artifacts/pickles/datasets/trauma_dataset.pkl`
 - Keras model: `artifacts/models/keras/nfti_model.h5`
 
 If those files are missing, complete steps from **`app.py`** (pickle + train/export) or adapt the paths.
@@ -116,17 +106,16 @@ If those files are missing, complete steps from **`app.py`** (pickle + train/exp
 ## 5. Regenerate project docs (optional)
 
 ```bash
-cd /path/to/your/NFTI-clone/NFTI
-python ../scripts/generate_docs.py
+cd /path/to/your/NFTI-clone
+python scripts/generate_docs.py
 ```
-From **repo root** instead: `python scripts/generate_docs.py` (if `scripts/` lives next to the inner `NFTI/` folder).
 
 ---
 
 ## 6. Sanity checks
 
-- **`NFTI/data/schemas/header_definitions.csv`** must align with your CSV column names for metadata and usage flags.
-- **`NFTI/data/schemas/customs.csv`** — custom features require dependencies present as dataset columns.
+- **`data/schemas/header_definitions.csv`** must align with your CSV column names for metadata and usage flags.
+- **`data/schemas/customs.csv`** — custom features require dependencies present as dataset columns.
 - Derived columns (**temporal / clinical**) are registered at runtime; they do not need to appear in the raw CSV.
 
 ---
@@ -135,8 +124,8 @@ From **repo root** instead: `python scripts/generate_docs.py` (if `scripts/` liv
 
 | Issue | What to try |
 |--------|--------------|
-| `ModuleNotFoundError: src` | Run Python from the **inner** package directory (the one with `src/`), not repo root alone. |
-| `Could not open requirements file` | Run `pip install -r requirements.txt` from **repo root** or **`cd` inner `NFTI/`** — see §1. Not from `docs/` or other subfolders. |
+| `ModuleNotFoundError: src` | Run Python from the repository root (the one with `src/`), not from a subfolder like `docs/`. |
+| `Could not open requirements file` | Run `pip install -r requirements.txt` from repo root — see §1. Not from `docs/` or other subfolders. |
 | `No matching distribution found for tensorflow-intel` | **Expected on Linux/WSL/macOS** — that package targets limited platforms. The lockfile uses **`tensorflow` only**; reinstall from an updated `requirements.txt`. Optional on Windows: `pip install tensorflow-intel==2.17.0` after the main install. |
 | Smoke check asserts threshold / OOF | Increase `n_rows` or ensure both outcome classes exist in the sample. |
 | GUI file picker fails | Use WSLg/X11 or run programmatic training via `smoke_check` / a small Python script with an explicit CSV path. |
