@@ -7,30 +7,28 @@ Schema-driven ML experiments for predicting NFTI (need for trauma interventions)
 - **Run the menu app**:
 
 ```bash
-cd NFTI
 python3 app.py
 ```
 
-- **Project data/artifacts layout** is defined in `NFTI/src/paths.py`.
+- **Project data/artifacts layout** is defined in `src/paths.py`.
 
 ## Repository layout
 
 ```text
-NFTI/
-  app.py                 # CLI menu entrypoint
-  test.py                # interactive testing menu for a trained model
-  src/                   # core logic
-  data/
-    schemas/             # header_definitions.csv, customs.csv
-    samples/             # small sample CSVs (tracked)
-    raw/                 # raw datasets (ignored by git)
-  artifacts/             # outputs (ignored by git)
-    models/              # keras/xgboost/ensemble model files
-    pickles/             # datasets + global pickles
-    figures/             # plots
-    logs/                # logs
-    tuning/              # tuner outputs
-    reports/             # missingness and other report files
+app.py                 # CLI menu entrypoint
+test.py                # interactive testing menu for a trained model
+src/                   # core logic
+data/
+  schemas/             # header_definitions.csv, customs.csv
+  samples/             # small sample CSVs (tracked)
+  raw/                 # raw datasets (ignored by git)
+artifacts/             # outputs (ignored by git)
+  models/              # keras/xgboost/ensemble model files
+  pickles/             # datasets + global pickles
+  figures/             # plots
+  logs/                # logs
+  tuning/              # tuner outputs
+  reports/             # missingness and other report files
 scripts/
   generate_docs.py        # this generator
 docs/
@@ -51,5 +49,5 @@ docs/
 
 ## Notes
 
-- `NFTI/data/raw/` and `NFTI/artifacts/` are intentionally git-ignored.
-- Custom features are defined in `NFTI/data/schemas/customs.csv` and evaluated using a safe arithmetic evaluator.
+- `data/raw/` and `artifacts/` are intentionally git-ignored.
+- Custom features are defined in `data/schemas/customs.csv` and evaluated using a safe arithmetic evaluator.

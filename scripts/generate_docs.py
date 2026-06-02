@@ -7,7 +7,7 @@ from typing import List, Tuple
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-APP_DIR = REPO_ROOT / "NFTI"
+APP_DIR = REPO_ROOT
 DOCS_DIR = REPO_ROOT / "docs"
 
 
@@ -72,21 +72,20 @@ def _project_tree_overview() -> str:
     return "\n".join(
         [
             "```text",
-            "NFTI/",
-            "  app.py                 # CLI menu entrypoint",
-            "  test.py                # interactive testing menu for a trained model",
-            "  src/                   # core logic",
-            "  data/",
-            "    schemas/             # header_definitions.csv, customs.csv",
-            "    samples/             # small sample CSVs (tracked)",
-            "    raw/                 # raw datasets (ignored by git)",
-            "  artifacts/             # outputs (ignored by git)",
-            "    models/              # keras/xgboost/ensemble model files",
-            "    pickles/             # datasets + global pickles",
-            "    figures/             # plots",
-            "    logs/                # logs",
-            "    tuning/              # tuner outputs",
-            "    reports/             # missingness and other report files",
+            "app.py                 # CLI menu entrypoint",
+            "test.py                # interactive testing menu for a trained model",
+            "src/                   # core logic",
+            "data/",
+            "  schemas/             # header_definitions.csv, customs.csv",
+            "  samples/             # small sample CSVs (tracked)",
+            "  raw/                 # raw datasets (ignored by git)",
+            "artifacts/             # outputs (ignored by git)",
+            "  models/              # keras/xgboost/ensemble model files",
+            "  pickles/             # datasets + global pickles",
+            "  figures/             # plots",
+            "  logs/                # logs",
+            "  tuning/              # tuner outputs",
+            "  reports/             # missingness and other report files",
             "scripts/",
             "  generate_docs.py        # this generator",
             "docs/",
@@ -114,11 +113,10 @@ def generate_readme(menu: List[MenuItem]) -> str:
             "- **Run the menu app**:",
             "",
             "```bash",
-            "cd NFTI",
             "python3 app.py",
             "```",
             "",
-            "- **Project data/artifacts layout** is defined in `NFTI/src/paths.py`.",
+            "- **Project data/artifacts layout** is defined in `src/paths.py`.",
             "",
             "## Repository layout",
             "",
@@ -130,8 +128,8 @@ def generate_readme(menu: List[MenuItem]) -> str:
             "",
             "## Notes",
             "",
-            "- `NFTI/data/raw/` and `NFTI/artifacts/` are intentionally git-ignored.",
-            "- Custom features are defined in `NFTI/data/schemas/customs.csv` and evaluated using a safe arithmetic evaluator.",
+            "- `data/raw/` and `artifacts/` are intentionally git-ignored.",
+            "- Custom features are defined in `data/schemas/customs.csv` and evaluated using a safe arithmetic evaluator.",
             "",
         ]
     )

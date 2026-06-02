@@ -15,10 +15,10 @@ __pycache__/
 .vscode/
 
 # Data and artifacts (avoid huge/derived outputs)
-NFTI/artifacts/
-NFTI/data/raw/
+artifacts/
+data/raw/
 
 # Keep schemas + samples tracked
-!NFTI/data/schemas/
-!NFTI/data/samples/
+!data/schemas/
+!data/samples/
 
