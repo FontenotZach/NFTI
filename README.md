@@ -1,0 +1,53 @@
+# NFTI
+
+Schema-driven ML experiments for predicting NFTI (need for trauma interventions) from trauma registry / prehospital-style variables.
+
+## Quick start
+
+- **Run the menu app**:
+
+```bash
+python3 app.py
+```
+
+- **Project data/artifacts layout** is defined in `src/paths.py`.
+
+## Repository layout
+
+```text
+app.py                 # CLI menu entrypoint
+test.py                # interactive testing menu for a trained model
+src/                   # core logic
+data/
+  schemas/             # header_definitions.csv, customs.csv
+  samples/             # small sample CSVs (tracked)
+  raw/                 # raw datasets (ignored by git)
+artifacts/             # outputs (ignored by git)
+  models/              # keras/xgboost/ensemble model files
+  pickles/             # datasets + global pickles
+  figures/             # plots
+  logs/                # logs
+  tuning/              # tuner outputs
+  reports/             # missingness and other report files
+scripts/
+  generate_docs.py        # this generator
+docs/
+  (generated markdown)
+```
+
+## Menu options (auto-extracted)
+
+- **1**: Pickle the data
+- **2**: Load pickled TraumaDataset
+- **3**: Print a random record from TraumaDataset
+- **4**: Train the model using ModelGen
+- **5**: Open individual model testing interface
+- **6**: Browse and load pre-made model
+- **7**: Load custom feature file
+- **8**: Toggle testing mode
+- **9**: Run imputation algorithm
+
+## Notes
+
+- `data/raw/` and `artifacts/` are intentionally git-ignored.
+- Custom features are defined in `data/schemas/customs.csv` and evaluated using a safe arithmetic evaluator.

@@ -1,8 +1,11 @@
 from src.Header import Header
 from src.TraumaRecord import TraumaRecord
+from src.data.temporal_derived import merge_temporal_derived_into_record
+from src.data.clinical_derived import merge_clinical_derived_into_record
 import os
 import json
 import csv
+import numpy as np
 import pandas as pd
 
 class TraumaDataset:
@@ -73,9 +76,26 @@ class TraumaDataset:
         valid_headers = [header for header in self.headers if (header.data_type and header.usage == "1")]
         prediction_headers = [header for header in self.headers if (header.data_type and header.y == "1")]
 
-        # Create filtered records for X (input) and Y (prediction) data
-        filtered_record = {header.name: data_row.get(header.name, 0) for header in valid_headers}
-        prediction_record = {header.name: data_row.get(header.name, 0) for header in prediction_headers}
+        def _row_value(row, name):
+            if isinstance(row, pd.Series):
+                if name not in row.index:
+                    return np.nan
+                v = row[name]
+                return np.nan if pd.isna(v) else v
+            if hasattr(row, "get"):
+                if name not in row:
+                    return np.nan
+                v = row.get(name)
+                return np.nan if v is None or (isinstance(v, float) and np.isnan(v)) else v
+            return np.nan
+
+        # Missing cells stay NaN so pipelines/imputation can distinguish from observed zeros.
+        filtered_record = {header.name: _row_value(data_row, header.name) for header in valid_headers}
+        valid_names = {header.name for header in valid_headers}
+        merge_temporal_derived_into_record(filtered_record, data_row, valid_names=valid_names)
+        merge_clinical_derived_into_record(filtered_record, data_row, valid_names=valid_names)
+
+        prediction_record = {header.name: _row_value(data_row, header.name) for header in prediction_headers}
         
         # Add filtered record to the dataset
         self.records.append(TraumaRecord(filtered_record, prediction_record, self.custom_features))

@@ -17,7 +17,11 @@ from tensorflow.keras.callbacks import EarlyStopping
 
 log_filename = f"log_ensemble_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
 
-from src.preprocessing.feature_preprocessor import preprocess_data_for_criterion as preprocess_data_for_criterion_shared
+from src.preprocessing.feature_preprocessor import (
+    build_features_dataframe,
+    labels_for_criterion,
+    preprocess_data_for_criterion as preprocess_data_for_criterion_shared,
+)
 from src.paths import LOGS_DIR, MODELS_ENSEMBLE_DIR, ensure_dirs
 
 def build_ensemble_model_meta(models_xgboost, models_nn, trauma_dataset):
@@ -28,21 +32,26 @@ def build_ensemble_model_meta(models_xgboost, models_nn, trauma_dataset):
 
     meta_models = {}
 
+    df_all = build_features_dataframe(trauma_dataset)
+    train_df = df_all[~df_all["for_testing"]].drop(columns=["for_testing"])
+
     # For each criterion, use the outputs from XGBoost and Neural Network to build a meta-model
     for criterion in models_xgboost.keys():
         print(f'Building meta-model for {criterion}...')
 
-        # Preprocess data for the criterion
-        X_test_binary, X_test_cat, X_test_cont, y_test = preprocess_data_for_criterion(criterion, trauma_dataset, testing=False)
+        y_train = labels_for_criterion(trauma_dataset, criterion)[~df_all["for_testing"].values]
 
-        # Get predictions from XGBoost
-        xgb_pred_prob = models_xgboost[criterion].predict_proba(np.column_stack((X_test_binary, X_test_cat, X_test_cont)))[:, 1]
+        # Get predictions from XGBoost (trained sklearn/imblearn pipeline on raw feature columns).
+        xgb_pred_prob = models_xgboost[criterion].predict_proba(train_df)[:, 1]
 
         meta_inputs = [xgb_pred_prob.reshape(-1, 1)]
 
         # Optionally add predictions from the Neural Network.
         nn_model = models_nn.get(criterion)
         if nn_model is not None:
+            X_test_binary, X_test_cat, X_test_cont, _ = preprocess_data_for_criterion_shared(
+                trauma_dataset, criterion, testing=False
+            )
             nn_pred_prob = nn_model.predict([X_test_binary, X_test_cat, X_test_cont])
             meta_inputs.append(nn_pred_prob.reshape(-1, 1))
 
@@ -62,7 +71,7 @@ def build_ensemble_model_meta(models_xgboost, models_nn, trauma_dataset):
         meta_model.compile(optimizer=Adam(learning_rate=0.001), loss='binary_crossentropy', metrics=['accuracy'])
 
         # Train the meta-model on the stacked inputs
-        meta_model.fit(meta_input, y_test, epochs=10, batch_size=64, validation_split=0.2, verbose=1)
+        meta_model.fit(meta_input, y_train, epochs=10, batch_size=64, validation_split=0.2, verbose=1)
 
         # Save the meta-model
         MODELS_ENSEMBLE_DIR.mkdir(parents=True, exist_ok=True)
@@ -73,14 +82,18 @@ def build_ensemble_model_meta(models_xgboost, models_nn, trauma_dataset):
 
         meta_models[criterion] = meta_model
 
-        X_test_binary, X_test_cat, X_test_cont, y_test = preprocess_data_for_criterion(criterion, trauma_dataset, testing=True)
+        test_df = df_all[df_all["for_testing"]].drop(columns=["for_testing"])
+        y_holdout = labels_for_criterion(trauma_dataset, criterion)[df_all["for_testing"].values]
 
         # Get predictions from XGBoost
-        xgb_pred_prob = models_xgboost[criterion].predict_proba(np.column_stack((X_test_binary, X_test_cat, X_test_cont)))[:, 1]
+        xgb_pred_prob = models_xgboost[criterion].predict_proba(test_df)[:, 1]
 
         meta_inputs = [xgb_pred_prob.reshape(-1, 1)]
         nn_model = models_nn.get(criterion)
         if nn_model is not None:
+            X_test_binary, X_test_cat, X_test_cont, _ = preprocess_data_for_criterion_shared(
+                trauma_dataset, criterion, testing=True
+            )
             nn_pred_prob = nn_model.predict([X_test_binary, X_test_cat, X_test_cont])
             meta_inputs.append(nn_pred_prob.reshape(-1, 1))
 
@@ -91,7 +104,7 @@ def build_ensemble_model_meta(models_xgboost, models_nn, trauma_dataset):
 
         # Calculate ROC curve and determine optimal threshold
         try:
-            fpr, tpr, thresholds = roc_curve(y_test, meta_pred_prob)
+            fpr, tpr, thresholds = roc_curve(y_holdout, meta_pred_prob)
             optimal_idx = np.argmax(tpr - fpr)  # Maximize the difference between TPR and FPR
             optimal_threshold = thresholds[optimal_idx]
             print(f"Optimal threshold for {criterion}: {optimal_threshold}")
@@ -103,12 +116,12 @@ def build_ensemble_model_meta(models_xgboost, models_nn, trauma_dataset):
         meta_pred = (meta_pred_prob >= optimal_threshold).astype(int)
 
         # Evaluate the ensemble model
-        accuracy = accuracy_score(y_test, meta_pred)
-        precision = precision_score(y_test, meta_pred)
-        recall = recall_score(y_test, meta_pred)
-        f1 = f1_score(y_test, meta_pred)
+        accuracy = accuracy_score(y_holdout, meta_pred)
+        precision = precision_score(y_holdout, meta_pred)
+        recall = recall_score(y_holdout, meta_pred)
+        f1 = f1_score(y_holdout, meta_pred)
         try:    
-            auc = roc_auc_score(y_test, meta_pred_prob)
+            auc = roc_auc_score(y_holdout, meta_pred_prob)
         except:
             auc = 0
 
@@ -139,41 +152,40 @@ def build_final_nfti_model(models_xgboost, models_nn, trauma_dataset):
     ensure_dirs()
     print("Building final meta-model for NFTI positive...")
 
-    # Preprocess the data for the final NFTI positive prediction
-    X_test_binary, X_test_cat, X_test_cont, y_test_nfti = preprocess_data_for_criterion('nfti_positive', trauma_dataset, testing=False)
+    df_all = build_features_dataframe(trauma_dataset)
+    train_df = df_all[~df_all["for_testing"]].drop(columns=["for_testing"])
+    test_df = df_all[df_all["for_testing"]].drop(columns=["for_testing"])
+    y_train_nfti = labels_for_criterion(trauma_dataset, "nfti_positive")[
+        ~df_all["for_testing"].values
+    ]
+    y_test_nfti = labels_for_criterion(trauma_dataset, "nfti_positive")[
+        df_all["for_testing"].values
+    ]
 
-    # Initialize list to hold the meta-model inputs (XGBoost + NN predictions)
-    meta_inputs = []
-
-    # Iterate through the criteria models for XGBoost and NN, and collect their predictions
+    stacked_train_cols = []
+    stacked_test_cols = []
     for criterion in models_xgboost.keys():
         print(f'Getting meta-model predictions for {criterion}...')
-
-        # Preprocess data for each criterion (same method for each one)
-        X_test_binary_criterion, X_test_cat_criterion, X_test_cont_criterion, _ = preprocess_data_for_criterion(criterion, trauma_dataset, testing=False)
-
-        # Get predictions from XGBoost
-        xgb_pred_prob = models_xgboost[criterion].predict_proba(np.column_stack((X_test_binary_criterion, X_test_cat_criterion, X_test_cont_criterion)))[:, 1]
-
-        meta_inputs = [xgb_pred_prob.reshape(-1, 1)]
-
+        xgb_tr = models_xgboost[criterion].predict_proba(train_df)[:, 1].reshape(-1, 1)
+        xgb_te = models_xgboost[criterion].predict_proba(test_df)[:, 1].reshape(-1, 1)
         nn_model = models_nn.get(criterion)
         if nn_model is not None:
-            nn_pred_prob = nn_model.predict(
-                [X_test_binary_criterion, X_test_cat_criterion, X_test_cont_criterion]
+            Xb, Xc, Xcont, _ = preprocess_data_for_criterion_shared(
+                trauma_dataset, criterion, testing=False
             )
-            meta_inputs.append(nn_pred_prob.reshape(-1, 1))
+            nn_tr = nn_model.predict([Xb, Xc, Xcont])
+            Xb_te, Xc_te, Xcont_te, _ = preprocess_data_for_criterion_shared(
+                trauma_dataset, criterion, testing=True
+            )
+            nn_te = nn_model.predict([Xb_te, Xc_te, Xcont_te])
+            stacked_train_cols.append(np.hstack([xgb_tr, nn_tr.reshape(-1, 1)]))
+            stacked_test_cols.append(np.hstack([xgb_te, nn_te.reshape(-1, 1)]))
+        else:
+            stacked_train_cols.append(xgb_tr)
+            stacked_test_cols.append(xgb_te)
 
-        # Combine predictions from XGBoost and optional NN into the meta input
-        meta_input = np.hstack(meta_inputs)
-
-        print(f"Shape of meta: {meta_input.shape}")
-
-        # Add to the list of meta inputs
-        meta_inputs.append(meta_input)
-
-    # Stack all the meta-model predictions as input for the final model
-    final_meta_input = np.hstack(meta_inputs)
+    final_meta_input = np.hstack(stacked_train_cols)
+    final_meta_test = np.hstack(stacked_test_cols)
 
     # Build a neural network as the final model for NFTI positive prediction
     input_shape = final_meta_input.shape[1]
@@ -195,7 +207,7 @@ def build_final_nfti_model(models_xgboost, models_nn, trauma_dataset):
     final_model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
 
     # Train the final model on the meta-input and NFTI positive labels
-    final_model.fit(final_meta_input, y_test_nfti, epochs=20, batch_size=64, validation_split=0.2)
+    final_model.fit(final_meta_input, y_train_nfti, epochs=20, batch_size=64, validation_split=0.2)
 
     # Save the final neural network model
     MODELS_ENSEMBLE_DIR.mkdir(parents=True, exist_ok=True)
@@ -206,8 +218,8 @@ def build_final_nfti_model(models_xgboost, models_nn, trauma_dataset):
 
     print(f"Final meta-model saved at {model_path}")
 
-    # Get predicted probabilities for the final model
-    final_pred_prob = final_model.predict(final_meta_input).flatten()
+    # Holdout predictions for evaluation
+    final_pred_prob = final_model.predict(final_meta_test).flatten()
 
     # Compute ROC curve to get the optimal threshold
     try:
