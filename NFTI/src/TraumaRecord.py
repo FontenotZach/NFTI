@@ -1,15 +1,20 @@
 import random
+import warnings
 
+from src.data.missing_values import MISSING, field_value_from_row, is_missing
 from src.data.safe_arithmetic_eval import safe_eval_arithmetic
 
 class TraumaRecord:
-    def __init__(self, data_row, y, custom_features):
+    _calc_warnings_issued = set()
+    def __init__(self, data_row, y, custom_features, *, assign_split=False, test_fraction=0.15):
         """
         Initializes a TraumaRecord object with a row of data and its associated headers.
         """
         self.data = data_row
+        # Pre-scale working copy used for imputation and derived feature formulas.
+        self.base_data = dict(data_row)
         self.y = y
-        self.for_testing = random.random() < 0.15  # 5% chance
+        self.for_testing = random.random() < test_fraction if assign_split else False
 
         self.calculate_custom_features(custom_features)
 
@@ -27,18 +32,42 @@ class TraumaRecord:
     
     def calculate_custom_features(self, custom_features):
         """
-        Calculate custom features based on the provided custom feature definitions.
+        Calculate custom features from pre-scale base_data (raw physiologic values).
         """
         for feature in custom_features:
-            values = {dep: self.data.get(dep, 0) for dep in feature['dependencies']}
-            
+            values = {
+                dep: field_value_from_row(self.base_data, dep) for dep in feature["dependencies"]
+            }
+            if any(is_missing(value) for value in values.values()):
+                self.base_data[feature["header"]] = MISSING
+                self.data[feature["header"]] = MISSING
+                continue
+
             try:
-                # Custom feature formulas come from `Data/customs.csv`.
-                # We evaluate them using a safe arithmetic-only evaluator.
-                self.data[feature['header']] = safe_eval_arithmetic(feature['calculation'], values)
+                result = safe_eval_arithmetic(feature["calculation"], values)
+                self.base_data[feature["header"]] = result
+                self.data[feature["header"]] = result
             except ZeroDivisionError:
-                # print(f"Division by zero encountered in feature {feature['header']}. Setting value to NaN.")
-                self.data[feature['header']] = float('nan')  # Assign NaN if division by zero occurs
+                warning_key = (feature['header'], 'ZeroDivisionError')
+                if warning_key not in TraumaRecord._calc_warnings_issued:
+                    warnings.warn(
+                        f"Division by zero encountered in custom feature '{feature['header']}'. "
+                        "Affected records will be set to NaN.",
+                        UserWarning,
+                        stacklevel=2,
+                    )
+                    TraumaRecord._calc_warnings_issued.add(warning_key)
+                self.base_data[feature["header"]] = MISSING
+                self.data[feature["header"]] = MISSING
             except Exception as e:
-                print(f"Error calculating feature {feature['header']}: {e}")
-                self.data[feature['header']] = 0  # Assign default value on error
+                warning_key = (feature["header"], str(e))
+                if warning_key not in TraumaRecord._calc_warnings_issued:
+                    warnings.warn(
+                        f"Error calculating custom feature '{feature['header']}': {e}. "
+                        "Affected records will be set to NaN.",
+                        UserWarning,
+                        stacklevel=2,
+                    )
+                    TraumaRecord._calc_warnings_issued.add(warning_key)
+                self.base_data[feature["header"]] = MISSING
+                self.data[feature["header"]] = MISSING
