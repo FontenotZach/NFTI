@@ -28,6 +28,11 @@ EXPORT_DIR = ARTIFACTS_DIR / "export"
 REPORTS_DIR = ARTIFACTS_DIR / "reports"
 ARCHIVE_DIR = ARTIFACTS_DIR / "archive"
 
+# Structured evaluation outputs
+RESULTS_DIR = APP_ROOT / "results"
+METRICS_CSV_PATH = RESULTS_DIR / "metrics" / "model_metrics.csv"
+PREDICTIONS_CSV_PATH = RESULTS_DIR / "predictions" / "row_level_predictions.csv"
+
 
 def ensure_dirs() -> None:
     """
@@ -49,6 +54,9 @@ def ensure_dirs() -> None:
         EXPORT_DIR,
         REPORTS_DIR,
         ARCHIVE_DIR,
+        RESULTS_DIR,
+        METRICS_CSV_PATH.parent,
+        PREDICTIONS_CSV_PATH.parent,
     ]:
         d.mkdir(parents=True, exist_ok=True)
 
