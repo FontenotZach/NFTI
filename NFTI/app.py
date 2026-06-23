@@ -12,12 +12,7 @@ import sys
 import tkinter as tk
 from tkinter import filedialog
 import numpy as np
-from sklearn.impute import SimpleImputer, KNNImputer
-from sklearn.impute import KNNImputer
-from tqdm import tqdm
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, classification_report, roc_curve
-from sklearn.experimental import enable_iterative_imputer
-from sklearn.impute import IterativeImputer
 from sklearn.metrics import PrecisionRecallDisplay
 
 sys.path.append('src')
@@ -34,6 +29,15 @@ from src.paths import (
     SAMPLES_DATA_DIR,
     SCHEMAS_DIR,
 )
+from src.dataset_audit import (
+    audit_trauma_dataset,
+    format_audit_summary,
+    print_header_detail,
+    write_audit_report,
+)
+from src.preprocessing.dataset_transform import describe_transform_state, transform_trauma_dataset
+from src.preprocessing.cohort_filter import apply_prehospital_ems_cohort_filter_to_dataset
+from src.preprocessing.mice_imputation import impute_trauma_dataset_mice
 
 # Globals
 trauma_dataset = None
@@ -45,20 +49,35 @@ final_model = None
 customs = None
 testing = False
 final_cutoff = 0
+final_cutoff_type = "training_youden"
+cutoff_derivation_split = "training"
+final_model_path = ""
 
 
-# class IterativeImputerWithProgress(IterativeImputer):
-#     def __init__(self, *args, **kwargs):
-#         super().__init__(*args, **kwargs)
+def default_customs_path():
+    path = SCHEMAS_DIR / "customs.csv"
+    return str(path) if path.exists() else None
 
-#     def _impute_one_feature(self, X_filled, mask_missing_values, feat_idx, neighbor_feat_idx, estimator=None):
-#         with tqdm(total=self.max_iter, desc=f"Imputing feature {feat_idx+1}/{X_filled.shape[1]}") as progress_bar:
-#             for i in range(self.max_iter):
-#                 progress_bar.update(1)
-#                 super()._impute_one_feature(
-#                     X_filled, mask_missing_values, feat_idx, neighbor_feat_idx, estimator=estimator
-#                 )
-#         return super()._impute_one_feature(X_filled, mask_missing_values, feat_idx, neighbor_feat_idx, estimator=estimator)
+
+def ask_open_filename(title, filetypes, initialdir=None):
+    """Open a file picker without blocking the terminal (Windows-safe tk setup)."""
+    root = None
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        root.update_idletasks()
+        kwargs = {"title": title, "filetypes": filetypes}
+        if initialdir and os.path.isdir(initialdir):
+            kwargs["initialdir"] = initialdir
+        selected = filedialog.askopenfilename(**kwargs)
+        return selected or ""
+    except tk.TclError as exc:
+        print(f"File dialog unavailable ({exc}).")
+        return ""
+    finally:
+        if root is not None:
+            root.destroy()
 
 
 # Load header definitions and data fields from the CSV file
@@ -81,15 +100,11 @@ def load_header_definitions(csv_file_path):
     return headers_info
 
 def load_dataset(testing):
-    # Use tkinter to ask the user for the dataset file
-    root = tk.Tk()
-    root.withdraw()  # Hide the root window
     print("Please select the dataset file to load.")
-    
-    # Open a file dialog for the user to select their dataset
-    data_file_path = filedialog.askopenfilename(
+    data_file_path = ask_open_filename(
         title="Select Dataset File",
-        filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+        filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+        initialdir=str(RAW_DATA_DIR),
     )
     
     if not data_file_path:
@@ -152,9 +167,14 @@ def pickle_data():
             y
         )
 
-    if customs:
-        print('Loading custom headers.')
-        trauma_dataset.add_custom_features(customs)
+    customs_path = customs or default_customs_path()
+    if customs_path:
+        print(f"Loading custom headers from {customs_path}.")
+        trauma_dataset.add_custom_features(customs_path)
+    else:
+        print("No custom features file set; skipping derived features.")
+
+    trauma_dataset.validate_build(header_info, df.columns)
 
     print(f"Headers populated. Total headers: {len(trauma_dataset.get_headers())}")
 
@@ -163,11 +183,19 @@ def pickle_data():
         print("Testing mode enabled. Loading only the first 1000 records...")
         df = df.head(1000)
     
-    # Populate records
+    # Populate records (train/test split assigned after cohort filtering).
     print("Populating records into TraumaDataset...")
     for _, row in df.iterrows():
-        trauma_dataset.add_record(row)
+        trauma_dataset.add_record(row, assign_split=False)
     print(f"Records populated. Total records: {len(trauma_dataset.get_records())}")
+
+    # Primary prehospital EMS cohort: exclude non-ambulance transport and interfacility transfers.
+    apply_prehospital_ems_cohort_filter_to_dataset(trauma_dataset)
+    trauma_dataset.assign_train_test_split(random_state=42)
+    print(
+        f"Eligible prehospital EMS cohort ready for downstream steps: "
+        f"{len(trauma_dataset.get_records())} records"
+    )
 
     # Pickle dataset
     datasets_dir = PICKLES_DIR / "datasets"
@@ -181,12 +209,10 @@ def pickle_data():
 def load_pickled_data():
     global trauma_dataset
 
-    root = tk.Tk()
-    root.withdraw()
-
-    pickle_file_path = filedialog.askopenfilename(
+    pickle_file_path = ask_open_filename(
         title="Select the pickled TraumaDataset file",
-        filetypes=(("Pickle files", "*.pkl"), ("All files", "*.*"))
+        filetypes=(("Pickle files", "*.pkl"), ("All files", "*.*")),
+        initialdir=str(PICKLES_DIR / "datasets"),
     )
 
     if not pickle_file_path:
@@ -212,10 +238,54 @@ def print_random_record():
         random_index = random.randint(0, len(trauma_dataset.records) - 1)
         print(f"Random Record [{random_index}]: {trauma_dataset.records[random_index]}")
 
+
+def show_dataset_audit_menu():
+    if trauma_dataset is None:
+        print("No dataset loaded. Pickle or load a TraumaDataset first.")
+        return
+
+    while True:
+        print("\n--- Dataset Audit / Verification ---")
+        print("1. Run full audit report (summary + CSV export)")
+        print("2. Inspect a specific header")
+        print("3. Print a random record")
+        print("4. Back to main menu")
+        choice = input("Enter your choice: ").strip()
+
+        if choice == "1":
+            try:
+                sample_size = int(input("Sample rows to export (default 10): ").strip() or "10")
+            except ValueError:
+                print("Invalid sample size. Using 10.")
+                sample_size = 10
+
+            audit = audit_trauma_dataset(trauma_dataset, sample_size=sample_size)
+            print("\n" + format_audit_summary(audit))
+
+            paths = write_audit_report(trauma_dataset, sample_size=sample_size)
+            print("\nAudit files written:")
+            for label, path in paths.items():
+                if path.exists():
+                    print(f"  {label}: {path}")
+        elif choice == "2":
+            header_name = input("Header name: ").strip()
+            if header_name:
+                print_header_detail(trauma_dataset, header_name)
+            else:
+                print("No header name provided.")
+        elif choice == "3":
+            print_random_record()
+        elif choice == "4":
+            break
+        else:
+            print("Invalid choice. Please try again.")
+
+
 def train_model():
 
     from sklearn.metrics import roc_curve, auc, precision_recall_curve, average_precision_score
     import matplotlib.pyplot as plt
+    from src.evaluation.binary_metrics import clean_binary_eval_inputs
 
     if trauma_dataset is None:
         print("No dataset loaded. Please load a pickled dataset first.")
@@ -231,6 +301,9 @@ def train_model():
     global meta_models
     global final_model
     global final_cutoff
+    global final_cutoff_type
+    global cutoff_derivation_split
+    global final_model_path
     
     roc_data = {}
     pr_data = {}
@@ -239,7 +312,16 @@ def train_model():
     for header in trauma_dataset.get_headers():
         if header.y == '1':
             print(f'Generating XGBoost model for header {header.name}')
-            xgboost_model, X_test, y_test = ModelGen.train_trauma_model_xgboost(trauma_dataset, header.name)
+            try:
+                xgboost_model, X_test, y_test = ModelGen.train_trauma_model_xgboost(
+                    trauma_dataset, header.name
+                )
+            except ValueError as exc:
+                print(f"Skipped {header.name}: {exc}")
+                continue
+
+            if xgboost_model is None:
+                continue
             
             # Store the model and test data
             models_xgboost_tuple[header.name] = (xgboost_model, X_test, y_test)
@@ -250,17 +332,41 @@ def train_model():
             nn_model = None
             models_nn[header.name] = nn_model
 
+    if not models_xgboost_tuple:
+        print("No models were trained (likely too few positive samples for one or more criteria).")
+        return
+
+    if "nfti_positive" in models_xgboost:
+        try:
+            from src.models.xgboost_shap import compute_nfti_positive_xgboost_shap
+
+            compute_nfti_positive_xgboost_shap(trauma_dataset, models_xgboost["nfti_positive"])
+        except Exception as exc:
+            print(f"SHAP analysis for nfti_positive skipped: {exc}")
+
     # Plotting all ROC curves
     plt.figure(figsize=(10, 8))
     colors = iter(plt.cm.rainbow(np.linspace(0, 1, len(models_xgboost_tuple))))
 
     for header_name, (model, X_test, y_test) in models_xgboost_tuple.items():
-        # Predict probabilities for the positive class
         y_pred_prob = model.predict_proba(X_test)[:, 1]
-        fpr, tpr, _ = roc_curve(y_test, y_pred_prob)
+        y_test_clean, y_pred_prob_clean, _, _ = clean_binary_eval_inputs(y_test, y_pred_prob)
+
+        if len(y_test_clean) == 0:
+            print(f"Skipping combined ROC curve for {header_name}: no labeled test records.")
+            continue
+        if len(np.unique(y_test_clean)) < 2:
+            print(
+                f"Skipping combined ROC curve for {header_name}: only one labeled class present "
+                f"(positive={int((y_test_clean == 1).sum())}, "
+                f"negative={int((y_test_clean == 0).sum())})."
+            )
+            continue
+
+        fpr, tpr, _ = roc_curve(y_test_clean, y_pred_prob_clean)
         roc_auc = auc(fpr, tpr)
         roc_data[header_name] = (fpr, tpr, roc_auc)
-        
+
         # Plot ROC curve for this model
         plt.plot(fpr, tpr, color=next(colors), lw=2, label=f'ROC curve of {header_name} (area = {roc_auc:.2f})')
 
@@ -284,12 +390,25 @@ def train_model():
     colors = iter(plt.cm.rainbow(np.linspace(0, 1, len(models_xgboost_tuple))))
 
     for header_name, (model, X_test, y_test) in models_xgboost_tuple.items():
-        # Predict probabilities for the positive class
         y_pred_prob = model.predict_proba(X_test)[:, 1]
+        y_test_clean, y_pred_prob_clean, _, _ = clean_binary_eval_inputs(y_test, y_pred_prob)
 
-        # Calculate Precision-Recall data
-        precision, recall, _ = precision_recall_curve(y_test, y_pred_prob)
-        average_precision = average_precision_score(y_test, y_pred_prob)
+        if len(y_test_clean) == 0:
+            print(f"Skipping combined PR curve for {header_name}: no labeled test records.")
+            continue
+        if len(np.unique(y_test_clean)) < 2:
+            print(
+                f"Skipping combined PR curve for {header_name}: only one labeled class present "
+                f"(positive={int((y_test_clean == 1).sum())}, "
+                f"negative={int((y_test_clean == 0).sum())})."
+            )
+            continue
+
+        precision, recall, _ = precision_recall_curve(y_test_clean, y_pred_prob_clean)
+        try:
+            average_precision = average_precision_score(y_test_clean, y_pred_prob_clean)
+        except ValueError:
+            average_precision = float("nan")
         pr_data[header_name] = (precision, recall, average_precision)
 
         # Plot Precision-Recall curve for this model
@@ -314,7 +433,12 @@ def train_model():
     # Now build the ensemble model
     meta_models = Ensemble.build_ensemble_model_meta(models_xgboost, models_nn, trauma_dataset)
 
-    final_model, final_cutoff = Ensemble.build_final_nfti_model(models_xgboost, models_nn, trauma_dataset)
+    final_model, final_cutoff, cutoff_metadata = Ensemble.build_final_nfti_model(
+        models_xgboost, models_nn, trauma_dataset
+    )
+    final_cutoff_type = str(cutoff_metadata.get("final_cutoff_type", "training_youden"))
+    cutoff_derivation_split = str(cutoff_metadata.get("cutoff_derivation_split", "training"))
+    final_model_path = str(cutoff_metadata.get("model_path", ""))
 
     save_globals()
 
@@ -330,21 +454,29 @@ def generate_ems_judgement_roc():
     import pandas as pd
     import matplotlib.pyplot as plt
     from sklearn.metrics import roc_curve, auc
+    from src.evaluation.binary_metrics import clean_binary_eval_inputs
 
     # Extract testing records from trauma_dataset
     testing_records = [record for record in trauma_dataset.get_records() if record.for_testing]
 
-    # Extract true labels and EMS judgments
-    y_test_nfti = pd.Series([record.y['nfti_positive'] for record in testing_records])
-    vpoemsjudge = pd.Series([record.data['VPOEMSJUDGE'] for record in testing_records])
+    y_test_nfti = np.array([record.y.get("nfti_positive", np.nan) for record in testing_records], dtype=float)
+    vpoemsjudge = pd.to_numeric(
+        pd.Series([record.data.get("VPOEMSJUDGE") for record in testing_records]),
+        errors="coerce",
+    ).to_numpy(dtype=float)
 
-    # Ensure data is clean
-    if y_test_nfti.isnull().any() or vpoemsjudge.isnull().any():
-        print("Missing data detected in the extracted fields. Please check the dataset.")
+    y_clean, score_clean, _, _ = clean_binary_eval_inputs(y_test_nfti, vpoemsjudge)
+    if len(y_clean) == 0:
+        print("Skipping EMS judgement ROC: no labeled records with valid VPOEMSJUDGE scores.")
+        return
+    if len(np.unique(y_clean)) < 2:
+        print(
+            "Skipping EMS judgement ROC: only one labeled class present "
+            f"(positive={int((y_clean == 1).sum())}, negative={int((y_clean == 0).sum())})."
+        )
         return
 
-    # Generate ROC curve for EMS judgments
-    fpr_human, tpr_human, _ = roc_curve(y_test_nfti, vpoemsjudge)
+    fpr_human, tpr_human, _ = roc_curve(y_clean, score_clean)
     roc_auc_human = auc(fpr_human, tpr_human)
 
     # Plot the ROC curve
@@ -372,12 +504,10 @@ def generate_ems_judgement_roc():
 def browse_and_load_model():
     global model
 
-    root = tk.Tk()
-    root.withdraw()
-
-    model_path = filedialog.askopenfilename(
+    model_path = ask_open_filename(
         title="Select the pre-made model file",
-        filetypes=(("HDF5 files", "*.h5"), ("Keras model files", "*.keras"), ("All files", "*.*"))
+        filetypes=(("HDF5 files", "*.h5"), ("Keras model files", "*.keras"), ("All files", "*.*")),
+        initialdir=str(PICKLES_DIR),
     )
 
     if not model_path:
@@ -391,13 +521,54 @@ def browse_and_load_model():
         print(f"Error loading model: {e}")
 
 def load_custom_feature_file():
-    """
-    Load custom features from a file and integrate them into the trauma_dataset.
-    """
-    global trauma_dataset, customs
-    from tkinter import filedialog
+    """Set the customs CSV path for the next run of option 1 (no dataset required)."""
+    global customs
 
-    customs = filedialog.askopenfilename(title="Select Custom Feature File", filetypes=(("CSV files", "*.csv"),))
+    default_path = default_customs_path()
+    print(
+        "Select a customs CSV. It will be applied the next time you run "
+        "'Pickle the data' (option 1). No dataset needs to be loaded first."
+    )
+    if default_path:
+        print(f"Default: {default_path}")
+
+    selected = ask_open_filename(
+        title="Select Custom Feature File",
+        filetypes=(("CSV files", "*.csv"), ("All files", "*.*")),
+        initialdir=str(SCHEMAS_DIR),
+    )
+
+    if selected:
+        if not os.path.isfile(selected):
+            print(f"File not found: {selected}")
+            return
+        customs = selected
+        print(f"Custom features file set: {customs}")
+        print("Run option 1 (Pickle the data) to build the dataset with these features.")
+        return
+
+    print("No file selected in dialog.")
+    if default_path:
+        use_default = input(f"Use default customs file? [{default_path}] [Y/n]: ").strip().lower()
+        if use_default in ("", "y", "yes"):
+            customs = default_path
+            print(f"Custom features file set: {customs}")
+            print("Run option 1 (Pickle the data) to apply.")
+            return
+
+    manual = input("Enter path to customs CSV (or press Enter to cancel): ").strip()
+    if manual and os.path.isfile(manual):
+        customs = manual
+        print(f"Custom features file set: {customs}")
+        print("Run option 1 (Pickle the data) to apply.")
+    elif manual:
+        print(f"File not found: {manual}")
+    else:
+        print("Custom features file unchanged.")
+        if customs:
+            print(f"Current setting: {customs}")
+        elif default_path:
+            print(f"Option 1 will still use the default: {default_path}")
 
 def compute_missing_list(trauma_dataset_arg=None):
     global trauma_dataset
@@ -613,351 +784,114 @@ def generate_univariate_analysis():
 
     return binary_results_df, continuous_results_df
 
-class IterativeImputerWithProgress(IterativeImputer):
-    def __init__(self, max_iter=10, tol=1e-3, random_state=None, **kwargs):
-        super().__init__(max_iter=max_iter, tol=tol, random_state=random_state, **kwargs)
 
-    def _impute_one_feature(self, X_filled, mask_missing_values, feat_idx, neighbor_feat_idx, *args, **kwargs):
-        """
-        Override _impute_one_feature to include a progress bar.
-        """
-        total_features = X_filled.shape[1]
-        with tqdm(total=self.max_iter, desc=f"Imputing feature {feat_idx + 1}/{total_features}") as progress_bar:
-            for i in range(self.max_iter):
-                progress_bar.update(1)
-                # Let the parent class handle the actual imputation
-                result = super()._impute_one_feature(X_filled, mask_missing_values, feat_idx, neighbor_feat_idx, *args, **kwargs)
-        return result
-
-def impute_missing_values_mice_with_progress(trauma_dataset, max_iter=10):
+def impute_missing_values(trauma_dataset_arg=None, max_iter=10):
     """
-    Impute missing values in the TraumaDataset using MICE (IterativeImputer) from sklearn,
-    separately for training and testing datasets based on the `for_testing` flag.
+    Run MICE imputation on the loaded TraumaDataset and save an imputed pickle.
     """
+    global trauma_dataset
 
-    print('Computing missing values and outputting to missing.txt')
-    compute_missing_list()
+    ds = trauma_dataset_arg if trauma_dataset_arg is not None else trauma_dataset
+    if ds is None:
+        print("No dataset loaded. Pickle or load a TraumaDataset first.")
+        return None
 
-    # Separate records into training and testing based on `for_testing` flag
-    train_records = [record for record in trauma_dataset.get_records() if not record.for_testing]
-    test_records = [record for record in trauma_dataset.get_records() if record.for_testing]
+    print("Computing missing values report...")
+    compute_missing_list(ds)
 
-    # Convert training and testing records into DataFrames for easier manipulation
-    df_train = pd.DataFrame([record.data for record in train_records])
-    df_test = pd.DataFrame([record.data for record in test_records])
+    print(f"Applying MICE imputation (max_iter={max_iter})...")
+    try:
+        impute_trauma_dataset_mice(
+            ds,
+            max_iter=max_iter,
+            save_path=PICKLES_DIR / "datasets" / "trauma_dataset_imputed.pkl",
+        )
+    except ValueError as exc:
+        print(f"MICE imputation failed: {exc}")
+        return None
 
-    # Lists to store column names for binary, categorical, and continuous variables
-    binary_cols = []
-    categorical_cols = []
-    continuous_cols = []
-
-    # Separate headers based on their type
-    for header in trauma_dataset.get_headers():
-        if "BIU" not in header.name:
-            if header.usage == '1' and header.timing in ['1']:
-                if header.data_type == '1':  # Binary
-                    binary_cols.append(header.name)
-                elif header.data_type == '2':  # Categorical
-                    categorical_cols.append(header.name)
-                elif header.data_type == '3':  # Continuous
-                    continuous_cols.append(header.name)
-
-    # Collect the features to impute
-    feature_cols = binary_cols + categorical_cols + continuous_cols
-
-    # Extract the columns for imputation from both train and test datasets
-    df_train_to_impute = df_train[feature_cols]
-    df_test_to_impute = df_test[feature_cols]
-
-    # Initialize IterativeImputer with Progress
-    imputer_train = IterativeImputerWithProgress(max_iter=max_iter, random_state=42)
-    imputer_test = IterativeImputerWithProgress(max_iter=max_iter, random_state=42)
-
-    print("Applying MICE imputation with progress...")
-
-    # Fit the imputer on training data
-    imputer_train.fit(df_train_to_impute)
-    imputer_test.fit(df_train_to_impute)
+    print("Missing values imputed with MICE successfully.")
+    print(f"Saved imputed dataset to {PICKLES_DIR / 'datasets' / 'trauma_dataset_imputed.pkl'}")
+    return ds
 
 
-    # Transform training and testing data separately to avoid data leakage
-    train_imputed = imputer_train.transform(df_train_to_impute)
-    test_imputed = imputer_test.transform(df_test_to_impute)
+def normalize_and_encode_dataset():
+    """
+    Z-score normalize continuous columns and one-hot encode categorical columns
+    on the loaded TraumaDataset, then save a transformed pickle.
+    """
+    global trauma_dataset
 
-    # Convert imputed arrays back to DataFrames
-    df_train_imputed = pd.DataFrame(train_imputed, columns=feature_cols)
-    df_test_imputed = pd.DataFrame(test_imputed, columns=feature_cols)
+    if trauma_dataset is None:
+        print("No dataset loaded. Pickle or load a TraumaDataset first.")
+        return
 
-    # Round binary and categorical columns to integers
-    df_train_imputed[binary_cols + categorical_cols] = df_train_imputed[binary_cols + categorical_cols].round(0).astype(int)
-    df_test_imputed[binary_cols + categorical_cols] = df_test_imputed[binary_cols + categorical_cols].round(0).astype(int)
+    print("Applying z-score normalization and one-hot encoding...")
+    try:
+        trauma_dataset = transform_trauma_dataset(trauma_dataset)
+    except ValueError as exc:
+        print(f"Transform failed: {exc}")
+        return
 
-    # Update the original DataFrames with imputed values
-    df_train[feature_cols] = df_train_imputed
-    df_test[feature_cols] = df_test_imputed
+    print(describe_transform_state(trauma_dataset))
 
-    # Reassign imputed values back to their corresponding records in TraumaDataset
-    for i, record in enumerate(train_records):
-        record.data = df_train.iloc[i].to_dict()
-    for i, record in enumerate(test_records):
-        record.data = df_test.iloc[i].to_dict()
-
-    # Update TraumaDataset by combining training and testing records
-    trauma_dataset.records = train_records + test_records
-
-    print(f"Missing values have been imputed using MICE successfully with progress tracking.")
-
-    # Save the imputed dataset as a pickle file
     ensure_dirs()
     datasets_dir = PICKLES_DIR / "datasets"
     datasets_dir.mkdir(parents=True, exist_ok=True)
-    pickle_file_path = str(datasets_dir / 'trauma_dataset_imputation_mice.pkl')
-    print(f"Saving the imputed pickled dataset to {pickle_file_path}...")
-    with open(pickle_file_path, 'wb') as f:
+    pickle_file_path = str(datasets_dir / "trauma_dataset_transformed.pkl")
+    print(f"Saving transformed dataset to {pickle_file_path}...")
+    with open(pickle_file_path, "wb") as f:
         pickle.dump(trauma_dataset, f)
-    print(f"Dataset pickled and saved successfully at {pickle_file_path}.")
+    print("Transformed dataset saved successfully.")
 
-    return trauma_dataset
-
-def impute_missing_values_knn(trauma_dataset, n_neighbors=50, batch_size=50000):
-    """
-    Impute missing values in the TraumaDataset using KNN Imputer from sklearn,
-    separately for training and testing datasets based on the `for_testing` flag.
-    """
-
-    print('Computing missing values and outputting to missing.txt')
-    compute_missing_list(trauma_dataset)
-
-    # Separate records into training and testing based on `for_testing` flag
-    train_records = [record for record in trauma_dataset.get_records()  if not record.for_testing]
-    test_records = [record for record in trauma_dataset.get_records() if record.for_testing]
-
-    # Convert training and testing records into DataFrames for easier manipulation
-    df_train = pd.DataFrame([record.data for record in train_records])
-    df_test = pd.DataFrame([record.data for record in test_records])
-
-    # Lists to store column names for binary, categorical, and continuous variables
-    binary_cols = []
-    categorical_cols = []
-    continuous_cols = []
-
-    # Separate headers based on their type
-    for header in trauma_dataset.get_headers():
-        if "BIU" not in header.name:
-            if header.usage == '1' and header.timing in ['1']: #TODO
-                if header.data_type == '1':  # Binary
-                    binary_cols.append(header.name)
-                elif header.data_type == '2':  # Categorical
-                    categorical_cols.append(header.name)
-                elif header.data_type == '3':  # Continuous
-                    continuous_cols.append(header.name)
-
-    # Collect the features to impute
-    feature_cols = binary_cols + categorical_cols + continuous_cols
-
-    # Extract the columns for imputation from both train and test datasets
-    df_train_to_impute = df_train[feature_cols]
-    df_test_to_impute = df_test[feature_cols]
-
-    # Initialize KNNImputer
-    imputer = KNNImputer(n_neighbors=n_neighbors)
-
-    # Apply KNN imputation in batches for training data
-    num_batches_train = (len(df_train_to_impute) // batch_size) + 1
-    train_imputed = np.empty(df_train_to_impute.shape)
-
-    for i in tqdm(range(num_batches_train), desc="Imputing training data batches"):
-        start_idx = i * batch_size
-        end_idx = min((i + 1) * batch_size, len(df_train_to_impute))
-        
-        # Impute each batch of training data
-        train_batch = df_train_to_impute.iloc[start_idx:end_idx]
-        train_imputed[start_idx:end_idx, :] = imputer.fit_transform(train_batch)
-
-    # Apply imputation to the testing data without refitting the imputer
-    test_imputed = imputer.transform(df_test_to_impute)
-
-    # Convert imputed arrays back to DataFrames
-    df_train_imputed = pd.DataFrame(train_imputed, columns=feature_cols)
-    df_test_imputed = pd.DataFrame(test_imputed, columns=feature_cols)
-
-    df_train_imputed[binary_cols + categorical_cols] = df_train_imputed[binary_cols + categorical_cols].round(0).astype(int)
-    df_test_imputed[binary_cols + categorical_cols] = df_test_imputed[binary_cols + categorical_cols].round(0).astype(int)
-
-    # Update the original DataFrames with imputed values
-    df_train[feature_cols] = df_train_imputed
-    df_test[feature_cols] = df_test_imputed
-
-    # Reassign imputed values back to their corresponding records in TraumaDataset
-    for i, record in enumerate(train_records):
-        record.data = df_train.iloc[i].to_dict()
-    for i, record in enumerate(test_records):
-        record.data = df_test.iloc[i].to_dict()
-
-    # Update TraumaDataset by combining training and testing records
-    trauma_dataset.records = train_records + test_records
-    # trauma_dataset.records = train_records
-
-    print(f"Missing values have been imputed using KNN Imputer (k={n_neighbors}) successfully.")
-
-    # Save the imputed dataset as a pickle file
-    ensure_dirs()
-    datasets_dir = PICKLES_DIR / "datasets"
-    datasets_dir.mkdir(parents=True, exist_ok=True)
-    pickle_file_path = str(datasets_dir / 'trauma_dataset_imputation.pkl')
-    print(f"Saving the imputed pickled dataset to {pickle_file_path}...")
-    with open(pickle_file_path, 'wb') as f:
-        pickle.dump(trauma_dataset, f)
-    print(f"Dataset pickled and saved successfully at {pickle_file_path}.")
-
-    return trauma_dataset
-
-def one_hot_encode_trauma_dataset(trauma_dataset):
-    """
-    One-hot encode the categorical columns PLACEOFINJURYCODE and PRIMARYECODEICD10 in the TraumaDataset.
-    """
-    df = pd.DataFrame([record.data for record in trauma_dataset.get_records()])
-
-    # Define the columns to one-hot encode
-    categorical_cols = ['PLACEOFINJURYCODE', 'PRIMARYECODEICD10']
-
-    # Filter out categorical columns that exist in the dataframe
-    categorical_cols = [col for col in categorical_cols if col in df.columns]
-
-    if not categorical_cols:
-        print("No categorical columns to one-hot encode.")
-        return trauma_dataset
-
-    # Apply one-hot encoding
-    for col in categorical_cols:
-        if df[col].dtype == 'object':
-            # Convert the column to a category if not already categorical
-            df[col] = df[col].astype('category')
-
-        # One-hot encode the categorical columns
-        dummies = pd.get_dummies(df[col], prefix=col, drop_first=False)
-        df = pd.concat([df, dummies], axis=1)
-        df.drop(col, axis=1, inplace=True)
-
-    # Update the records in the TraumaDataset with the one-hot encoded DataFrame
-    for i, record in enumerate(trauma_dataset.get_records()):
-        record.data = df.iloc[i].to_dict()
-
-    print("One-hot encoding completed successfully for PLACEOFINJURYCODE and PRIMARYECODEICD10.")
-
-    return trauma_dataset
 
 def evaluate_testing_records_with_ensemble(trauma_dataset):
     global models_xgboost
     global models_nn
-    global meta_models
     global final_model
     global final_cutoff
+    global final_cutoff_type
+    global cutoff_derivation_split
+    global final_model_path
 
-    from datetime import datetime
-
-    log_filename = f"log_ensemble_final_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-
-    # Extract the records flagged for testing
     testing_records = [record for record in trauma_dataset.get_records() if record.for_testing]
-
     if not testing_records:
         print("No testing records available.")
         return
 
     print(f"\n--- Running {len(testing_records)} Records through Ensemble Models ---\n")
 
-    # Initialize list to hold the meta-model inputs (XGBoost + NN predictions)
-    meta_inputs = []
-
-    # Iterate through the criteria models for XGBoost and NN
     for criterion in models_xgboost.keys():
-        print(f'Getting meta-model predictions for {criterion}...')
+        print(f"Getting meta-model predictions for {criterion}...")
 
-        # Preprocess data for each criterion using the same method as during training
-        X_test_binary, X_test_cat, X_test_cont, _ = Ensemble.preprocess_data_for_criterion(criterion, trauma_dataset, testing=True)
-
-        # Get predictions from XGBoost
-        xgb_pred_prob = models_xgboost[criterion].predict_proba(np.column_stack((X_test_binary, X_test_cat, X_test_cont)))[:, 1]
-
-        # Combine predictions from XGBoost and optional NN into the meta input
-        meta_parts = [xgb_pred_prob.reshape(-1, 1)]
-        nn_model = models_nn.get(criterion)
-        if nn_model is not None:
-            nn_pred_prob = nn_model.predict([X_test_binary, X_test_cat, X_test_cont]).flatten()
-            meta_parts.append(nn_pred_prob.reshape(-1, 1))
-
-        meta_input = np.hstack(meta_parts)
-
-        # Add to the list of meta inputs for the final ensemble
-        meta_inputs.append(meta_input)
-
-    # Stack all the meta-model predictions as input for the final ensemble model
-    final_meta_input = np.hstack(meta_inputs)
-
-    # Ensure the final meta input shape matches the expected input shape for the final model
-    if final_meta_input.shape[1] != final_model.input_shape[1]:
-        print(f"Shape mismatch for final model. Expected {final_model.input_shape[1]}, got {final_meta_input.shape[1]}")
-        return
-
-    print(f"Shape mismatch for final model. Expected {final_model.input_shape[1]}, got {final_meta_input.shape[1]}")
-
-    # Get predicted probabilities for the final ensemble model
-    final_pred_prob = final_model.predict(final_meta_input).flatten()
-
-    # Print the shape of final_pred_prob
-    print(f"Shape of final_pred_prob: {final_pred_prob.shape}")
-
-    # Apply the default threshold for binary classification
-    final_pred = (final_pred_prob >= final_cutoff).astype(int)
-
-    # Print the shape of final_pred
-    print(f"Shape of final_pred: {final_pred.shape}")
-
-    # Extract the actual 'nfti_positive' labels from the records and tile them to match meta-input length
-    y_test_nfti = pd.Series([record.y['nfti_positive'] for record in testing_records])
-
-    # Print the shape of y_test_nfti
-    print(f"Shape of y_test_nfti: {y_test_nfti.shape}")
-
-    # Print the shape of final_meta_input for reference
-    print(f"Shape of final_meta_input: {final_meta_input.shape}")
-    # Evaluate the final ensemble predictions
-    accuracy = accuracy_score(y_test_nfti, final_pred)
-    precision = precision_score(y_test_nfti, final_pred)
-    recall = recall_score(y_test_nfti, final_pred)
-    f1 = f1_score(y_test_nfti, final_pred)
-    auc = roc_auc_score(y_test_nfti, final_pred_prob)
-
-    evaluation_results = (
-        f"\n--- Final Ensemble Model Evaluation on Validation Records ---\n"
-        f"Cutoff: {final_cutoff * 100:.2f}%\n"
-        f"Accuracy: {accuracy * 100:.2f}%\n"
-        f"Precision: {precision * 100:.2f}%\n"
-        f"Recall (Sensitivity): {recall * 100:.2f}%\n"
-        f"F1 Score: {f1 * 100:.2f}%\n"
-        f"ROC AUC: {auc:.4f}\n"
+    Ensemble.evaluate_final_ensemble_holdout(
+        trauma_dataset,
+        final_model,
+        models_xgboost,
+        models_nn,
+        final_cutoff=final_cutoff,
+        final_cutoff_type=final_cutoff_type,
+        model_path=final_model_path,
+        include_posthoc_holdout=True,
     )
-    
-    print(evaluation_results)
-
-    # Save the evaluation results to a log file
-    ensure_dirs()
-    log_file_path = LOGS_DIR / log_filename
-    with open(log_file_path, 'a') as log_file:
-        log_file.write(evaluation_results)
-
-    print(f"Evaluation results saved to {log_file_path}")
 
 def save_globals():
     """
     Save global variables (models_xgboost, models_nn, meta_models, final_model) as pickled files in the Model_Pickle directory.
     """
     global models_xgboost, models_nn, meta_models, final_model, final_cutoff
+    global final_cutoff_type, cutoff_derivation_split, final_model_path
 
     ensure_dirs()
     model_dir = PICKLES_DIR / "globals"
     model_dir.mkdir(parents=True, exist_ok=True)
+
+    cutoff_metadata = {
+        "final_cutoff": final_cutoff,
+        "final_cutoff_type": final_cutoff_type,
+        "cutoff_derivation_split": cutoff_derivation_split,
+        "model_path": final_model_path,
+    }
 
     # Save each global variable as a separate pickle file
     with open(model_dir / 'models_xgboost.pkl', 'wb') as f:
@@ -970,6 +904,8 @@ def save_globals():
         pickle.dump(final_model, f)
     with open(model_dir / 'final_cutoff.pkl', 'wb') as f:
         pickle.dump(final_cutoff, f)
+    with open(model_dir / 'final_cutoff_metadata.pkl', 'wb') as f:
+        pickle.dump(cutoff_metadata, f)
 
     print(f"Global models saved in {model_dir}")
 
@@ -978,6 +914,7 @@ def load_globals():
     Load global variables (models_xgboost, models_nn, meta_models, final_model) from pickled files in the Model_Pickle directory.
     """
     global models_xgboost, models_nn, meta_models, final_model, final_cutoff
+    global final_cutoff_type, cutoff_derivation_split, final_model_path
 
     ensure_dirs()
     model_dir = PICKLES_DIR / "globals"
@@ -992,7 +929,19 @@ def load_globals():
     with open(model_dir / 'final_model.pkl', 'rb') as f:
         final_model = pickle.load(f)
     with open(model_dir / 'final_cutoff.pkl', 'rb') as f:
-        final_cutoff = pickle.load(f) 
+        final_cutoff = pickle.load(f)
+
+    metadata_path = model_dir / 'final_cutoff_metadata.pkl'
+    if metadata_path.exists():
+        with open(metadata_path, 'rb') as f:
+            cutoff_metadata = pickle.load(f)
+        final_cutoff_type = str(cutoff_metadata.get("final_cutoff_type", "training_youden"))
+        cutoff_derivation_split = str(cutoff_metadata.get("cutoff_derivation_split", "training"))
+        final_model_path = str(cutoff_metadata.get("model_path", ""))
+    else:
+        final_cutoff_type = "training_youden"
+        cutoff_derivation_split = "training"
+        final_model_path = ""
 
     print(f"Global models loaded from {model_dir}")
 
@@ -1002,18 +951,19 @@ def show_menu():
         print("\n--- Trauma Dataset Menu ---")
         print("1. Pickle the data")
         print("2. Load pickled TraumaDataset")
-        print("3. Print a random record from TraumaDataset")
+        print("3. Audit / verify dataset")
         print("4. Train the model using ModelGen")
         print("5. Open individual model testing interface")
         print("6. Browse and load pre-made model")
-        print("7. Load custom feature file")
+        print("7. Set custom features CSV (optional before 1; default is data/schemas/customs.csv)")
         print("8. Toggle testing mode")
-        print("9. Run imputation algorithm")
-        print("10. Run ensemble testing")
-        print("11. Load globals")
-        print("12. Generate EMS judgement comparison")
-        print("13. Compute missing list")
-        print("14. Exit")
+        print("9. Run MICE imputation")
+        print("10. Normalize and encode dataset (z-score + one-hot)")
+        print("11. Run ensemble testing")
+        print("12. Load globals")
+        print("13. Generate EMS judgement comparison")
+        print("14. Compute missing list")
+        print("15. Exit")
         choice = input("Enter your choice: ")
 
         if choice == '1':
@@ -1021,7 +971,7 @@ def show_menu():
         elif choice == '2':
             load_pickled_data()
         elif choice == '3':
-            print_random_record()
+            show_dataset_audit_menu()
         elif choice == '4':
             train_model()
         elif choice == '5':
@@ -1041,16 +991,18 @@ def show_menu():
                 print('Testing mode on')
                 testing = not testing
         elif choice == '9':
-            impute_missing_values_knn(trauma_dataset)
+            impute_missing_values()
         elif choice == '10':
-            evaluate_testing_records_with_ensemble(trauma_dataset)
+            normalize_and_encode_dataset()
         elif choice == '11':
-            load_globals()
+            evaluate_testing_records_with_ensemble(trauma_dataset)
         elif choice == '12':
-            generate_ems_judgement_roc()
+            load_globals()
         elif choice == '13':
-            compute_missing_list()
+            generate_ems_judgement_roc()
         elif choice == '14':
+            compute_missing_list()
+        elif choice == '15':
             generate_univariate_analysis()
             print('Exiting...')
             break

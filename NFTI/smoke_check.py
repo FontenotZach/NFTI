@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 
 from src.TraumaDataset import TraumaDataset
+from src.preprocessing.cohort_filter import apply_prehospital_ems_cohort_filter_to_dataset
 from src.preprocessing.feature_preprocessor import preprocess_data_for_criterion
 from src.models.xgboost_model import train_xgboost_model
 from src import Ensemble
@@ -56,8 +57,13 @@ def build_smoke_dataset(dataset_csv_path: str, *, n_rows: int = 250, add_custom:
     if add_custom:
         ds.add_custom_features(customs_csv_path)
 
+    ds.validate_build(header_info, df.columns)
+
     for _, row in df.iterrows():
-        ds.add_record(row)
+        ds.add_record(row, assign_split=False)
+
+    apply_prehospital_ems_cohort_filter_to_dataset(ds, write_report=False)
+    ds.assign_train_test_split(random_state=42)
 
     return ds
 
