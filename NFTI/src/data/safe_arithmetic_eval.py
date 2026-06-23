@@ -1,4 +1,5 @@
 import ast
+import math
 from typing import Any, Dict
 
 
@@ -13,6 +14,15 @@ _ALLOWED_UNARYOPS = {
     ast.UAdd: lambda a: a,
     ast.USub: lambda a: -a,
 }
+
+
+def _to_float(value: Any) -> float:
+    if value is None:
+        return float("nan")
+    result = float(value)
+    if math.isnan(result):
+        return float("nan")
+    return result
 
 
 def safe_eval_arithmetic(expr: str, variables: Dict[str, Any]) -> float:
@@ -41,9 +51,8 @@ def safe_eval_arithmetic(expr: str, variables: Dict[str, Any]) -> float:
         # Variable lookup.
         if isinstance(node, ast.Name):
             if node.id in variables:
-                return float(variables[node.id])
-            # Match prior behavior: missing deps evaluate to 0.
-            return 0.0
+                return _to_float(variables[node.id])
+            return float("nan")
 
         if isinstance(node, ast.BinOp):
             op_type = type(node.op)
@@ -51,13 +60,18 @@ def safe_eval_arithmetic(expr: str, variables: Dict[str, Any]) -> float:
                 raise ValueError(f"Disallowed operator: {op_type.__name__}")
             left = _eval(node.left)
             right = _eval(node.right)
+            if math.isnan(left) or math.isnan(right):
+                return float("nan")
             return _ALLOWED_BINOPS[op_type](left, right)
 
         if isinstance(node, ast.UnaryOp):
             op_type = type(node.op)
             if op_type not in _ALLOWED_UNARYOPS:
                 raise ValueError(f"Disallowed unary operator: {op_type.__name__}")
-            return _ALLOWED_UNARYOPS[op_type](_eval(node.operand))
+            operand = _eval(node.operand)
+            if math.isnan(operand):
+                return float("nan")
+            return _ALLOWED_UNARYOPS[op_type](operand)
 
         raise ValueError(f"Disallowed expression element: {type(node).__name__}")
 
