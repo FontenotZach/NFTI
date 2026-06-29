@@ -21,10 +21,11 @@ def _is_missing(value: Any) -> bool:
 
 
 def _expected_input_headers(trauma_dataset) -> List[str]:
+    # Headers populated into record.data are governed by the load flag.
     return [
         header.name
         for header in trauma_dataset.get_headers()
-        if header.data_type and header.usage == "1"
+        if header.data_type and header.load == "1"
     ]
 
 
@@ -45,6 +46,7 @@ def _header_row(header) -> Dict[str, Any]:
         "name": header.name,
         "timing": header.timing,
         "data_type": header.data_type,
+        "load": header.load,
         "usage": header.usage,
         "y": header.y,
         "is_custom": header.definition.startswith("Custom feature:"),
@@ -105,6 +107,7 @@ def audit_trauma_dataset(trauma_dataset, *, sample_size: int = 10) -> Dict[str, 
                 "header": header.name,
                 "timing": header.timing,
                 "data_type": header.data_type,
+                "load": header.load,
                 "usage": header.usage,
                 "y": header.y,
                 "is_custom": is_custom,
@@ -214,7 +217,7 @@ def format_audit_summary(audit: Dict[str, Any]) -> str:
         f"Generated: {audit['generated_at']}",
         f"Records: {audit['record_count']}",
         f"Registered headers: {audit['header_count']}",
-        f"Input headers (Usage=1): {audit['input_header_count']}",
+        f"Input headers (Load=1): {audit['input_header_count']}",
         f"Target headers (Y=1): {audit['target_header_count']}",
         f"Custom features: {audit['custom_feature_count']}",
         f"Model-ready headers (Usage=1, Timing=1): {audit['model_ready_header_count']}",

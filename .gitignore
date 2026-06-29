@@ -6,15 +6,22 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 
+# Virtual environments
+venv/
+.venv/
+env/
+
 # OS / editor
 .DS_Store
 .vscode/
 
-# Data and artifacts (avoid huge/derived outputs)
+# Generated artifacts and derived outputs (never committed)
 NFTI/artifacts/
-NFTI/data/raw/
+NFTI/results/
+NFTI/Manuscript/
 
-# Keep schemas + samples tracked
+# Patient-derived data: NEVER commit on any branch. Even de-identified TQIP
+# values originate from real patients. Only schema/config under data/schemas/
+# is tracked; everything else under data/ (raw cohorts, samples) is ignored.
+NFTI/data/*
 !NFTI/data/schemas/
-!NFTI/data/samples/
-

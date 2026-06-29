@@ -1,0 +1,190 @@
+Header,HumanReadable
+SEX,Male Sex
+AGEyears,Age (years)
+PROTDEV_NONE,Protective Device: None
+PROTDEV_LAP_BELT,Protective Device: Lap Belt
+PROTDEV_PER_FLOAT,Protective Device: Personal Flotation Device
+PROTDEV_PROTECT_GEAR,Protective Device: Protective Gear
+PROTDEV_EYE_PROTECT,Protective Device: Eye Protection
+PROTDEV_CHILD_RESTRAINT,Protective Device: Child Restraint
+PROTDEV_HELMET,Protective Device: Helmet
+PROTDEV_AIRBAG_PRESENT,Protective Device: Airbag Present
+PROTDEV_PROTECT_CLOTH,Protective Device: Protective Clothing
+PROTDEV_SHOULDER_BELT,Protective Device: Shoulder Belt
+PROTDEV_OTHER,Protective Device: Other
+PROTDEV_NA,Protective Device: Not Applicable
+PROTDEV_UK,Protective Device: Unknown
+AIRBAG_NOTDEPLOYED,Airbag: Not Deployed
+AIRBAG_DEPLOYED_FRNT,Airbag: Front Deployed
+AIRBAG_DEPLOYED_SIDE,Airbag: Side Deployed
+AIRBAG_DEPLOYED_OTHER,Airbag: Other Location Deployed
+AIRBAG_DEPLOYED_NA,Airbag: Not Applicable
+AIRBAG_DEPLOYED_UK,Airbag: Unknown
+TRANSPORTMODE,Transport Mode to Hospital
+EMSSBP,EMS SBP
+EMSSBP_BIU,EMS SBP (Not Recorded Reason)
+EMSPULSERATE,EMS Pulse Rate
+EMSPULSERATE_BIU,EMS Pulse Rate (Not Recorded Reason)
+EMSRESPIRATORYRATE,EMS Respiratory Rate
+EMSRESPIRATORYRATE_BIU,EMS Respiratory Rate (Not Recorded Reason)
+EMSPULSEOXIMETRY,EMS Pulse Oximetry (SpO2)
+EMSPULSEOXIMETRY_BIU,EMS Pulse Oximetry (Not Recorded Reason)
+EMSGCSEYE,EMS GCS Eye
+EMSGCSEYE_BIU,EMS GCS Eye (Not Recorded Reason)
+EMSGCSMOTOR,EMS GCS Motor
+EMSGCSMOTOR_BIU,EMS GCS Motor (Not Recorded Reason)
+EMSGCSVERBAL,EMS GCS Verbal
+EMSGCSVERBAL_BIU,EMS GCS Verbal (Not Recorded Reason)
+EMSTOTALGCS,EMS Total GCS
+EMSTOTALGCS_BIU,EMS Total GCS (Not Recorded Reason)
+PREHOSPITALCARDIACARREST,Prehospital Cardiac Arrest
+TCCGCSLE13,Triage Criteria: GCS 13 or Less
+TCCSBPLT30,Triage Criteria: Low SBP
+TCC10RR29,Triage Criteria: Respiratory Rate Under 10 or Over 29
+TCCPEN,Triage Criteria: Penetrating Injury
+TCCCHEST,Triage Criteria: Chest Wall Instability
+TCCLONGBONE,Triage Criteria: Two or More Long Bone Fractures
+TCCCRUSHED,Triage Criteria: Crushed/Degloved/Mangled Extremity
+TCCAMPUTATION,Triage Criteria: Amputation Proximal to Wrist or Ankle
+TCCPELVIC,Triage Criteria: Pelvic Fracture
+TCCSKULLFRACTURE,Triage Criteria: Open or Depressed Skull Fracture
+TCCPARALYSIS,Triage Criteria: Paralysis
+TCC_NA,Triage Criteria: None Documented
+TCC_UK,Triage Criteria: Unknown
+VPOFALLADULT,Triage: Fall Over 20 Feet (Adult)
+VPOFALLCHILD,Triage: Fall Over 10 Feet or 2-3x Height (Child)
+VPOCRASHINTRUSION,Triage: Vehicle Intrusion
+VPOCRASHEJECT,Triage: Ejection from Vehicle
+VPOCRASHDEATH,Triage: Death in Same Vehicle
+VPOCRASHTELEMETRY,Triage: High-Risk Vehicle Telemetry
+VPOAUTOPEDIMPACT,Triage: Auto vs Pedestrian/Cyclist Impact
+VPOMOTORCYCLECRASH,Triage: Motorcycle Crash
+VPO65SBP110,Triage: Age Over 65 with SBP Under 110
+VPOANTICOAGULANT,Triage: Anticoagulant Use
+VPOPREGNANCY20WKS,Triage: Pregnancy Over 20 Weeks
+VPOBURNS,Triage: Burns
+VPOTRAUMABURNS,Triage: Burns with Trauma
+VPO_NA,Triage (Provider Judgment): Not Applicable
+VPO_UK,Triage (Provider Judgment): Unknown
+MECHANISM,Injury Mechanism
+TRAUMATYPE,Trauma Type
+nfti_positive,NFTI Positive (Any Criteria Met)
+TRANSPORTMODE_1.0,Transport Mode: Ground Ambulance
+TRANSPORTMODE_2.0,Transport Mode: Helicopter Ambulance
+TRANSPORTMODE_3.0,Transport Mode: Fixed-Wing Ambulance
+EMSSBP_BIU_1.0,EMS SBP: N/A
+EMSSBP_BIU_2.0,EMS SBP: Not Documented
+EMSSBP_BIU___MISSING__,EMS SBP: Missing
+EMSPULSERATE_BIU_1.0,EMS Pulse Rate: N/A
+EMSPULSERATE_BIU_2.0,EMS Pulse Rate: Not Documented
+EMSPULSERATE_BIU___MISSING__,EMS Pulse Rate: Missing
+EMSRESPIRATORYRATE_BIU_1.0,EMS Respiratory Rate: N/A
+EMSRESPIRATORYRATE_BIU_2.0,EMS Respiratory Rate: Not Documented
+EMSRESPIRATORYRATE_BIU___MISSING__,EMS Respiratory Rate: Missing
+EMSPULSEOXIMETRY_BIU_1.0,EMS Pulse Oximetry: N/A
+EMSPULSEOXIMETRY_BIU_2.0,EMS Pulse Oximetry: Not Documented
+EMSPULSEOXIMETRY_BIU___MISSING__,EMS Pulse Oximetry: Missing
+EMSGCSEYE_1.0,EMS GCS Eye: 1
+EMSGCSEYE_2.0,EMS GCS Eye: 2
+EMSGCSEYE_3.0,EMS GCS Eye: 3
+EMSGCSEYE_4.0,EMS GCS Eye: 4
+EMSGCSEYE___MISSING__,EMS GCS Eye: Missing
+EMSGCSEYE_BIU_1.0,EMS GCS Eye: N/A
+EMSGCSEYE_BIU_2.0,EMS GCS Eye: Not Documented
+EMSGCSEYE_BIU___MISSING__,EMS GCS Eye: Missing
+EMSGCSMOTOR_1.0,EMS GCS Motor: 1
+EMSGCSMOTOR_2.0,EMS GCS Motor: 2
+EMSGCSMOTOR_3.0,EMS GCS Motor: 3
+EMSGCSMOTOR_4.0,EMS GCS Motor: 4
+EMSGCSMOTOR_5.0,EMS GCS Motor: 5
+EMSGCSMOTOR_6.0,EMS GCS Motor: 6
+EMSGCSMOTOR___MISSING__,EMS GCS Motor: Missing
+EMSGCSMOTOR_BIU_1.0,EMS GCS Motor: N/A
+EMSGCSMOTOR_BIU_2.0,EMS GCS Motor: Not Documented
+EMSGCSMOTOR_BIU___MISSING__,EMS GCS Motor: Missing
+EMSGCSVERBAL_1.0,EMS GCS Verbal: 1
+EMSGCSVERBAL_2.0,EMS GCS Verbal: 2
+EMSGCSVERBAL_3.0,EMS GCS Verbal: 3
+EMSGCSVERBAL_4.0,EMS GCS Verbal: 4
+EMSGCSVERBAL_5.0,EMS GCS Verbal: 5
+EMSGCSVERBAL___MISSING__,EMS GCS Verbal: Missing
+EMSGCSVERBAL_BIU_1.0,EMS GCS Verbal: N/A
+EMSGCSVERBAL_BIU_2.0,EMS GCS Verbal: Not Documented
+EMSGCSVERBAL_BIU___MISSING__,EMS GCS Verbal: Missing
+EMSTOTALGCS_10.0,EMS Total GCS: 10
+EMSTOTALGCS_11.0,EMS Total GCS: 11
+EMSTOTALGCS_12.0,EMS Total GCS: 12
+EMSTOTALGCS_13.0,EMS Total GCS: 13
+EMSTOTALGCS_14.0,EMS Total GCS: 14
+EMSTOTALGCS_15.0,EMS Total GCS: 15
+EMSTOTALGCS_3.0,EMS Total GCS: 3
+EMSTOTALGCS_4.0,EMS Total GCS: 4
+EMSTOTALGCS_5.0,EMS Total GCS: 5
+EMSTOTALGCS_6.0,EMS Total GCS: 6
+EMSTOTALGCS_7.0,EMS Total GCS: 7
+EMSTOTALGCS_8.0,EMS Total GCS: 8
+EMSTOTALGCS_9.0,EMS Total GCS: 9
+EMSTOTALGCS___MISSING__,EMS Total GCS: Missing
+EMSTOTALGCS_BIU_1.0,EMS Total GCS: N/A
+EMSTOTALGCS_BIU_2.0,EMS Total GCS: Not Documented
+EMSTOTALGCS_BIU___MISSING__,EMS Total GCS: Missing
+MECHANISM_Cut/Pierce,Mechanism: Cut/Pierce
+MECHANISM_Drowning/Submersion,Mechanism: Drowning/Submersion
+MECHANISM_Fall,Mechanism: Fall
+MECHANISM_Fire/Flame,Mechanism: Fire/Flame
+MECHANISM_Firearm,Mechanism: Firearm
+MECHANISM_MVT Motorcyclist,Mechanism: Motor Vehicle Traffic - Motorcyclist
+MECHANISM_MVT Occupant,Mechanism: Motor Vehicle Traffic - Occupant
+MECHANISM_MVT Other,Mechanism: Motor Vehicle Traffic - Other
+MECHANISM_MVT Pedal Cyclist,Mechanism: Motor Vehicle Traffic - Pedal Cyclist
+MECHANISM_MVT Pedestrian,Mechanism: Motor Vehicle Traffic - Pedestrian
+MECHANISM_MVT Unspecified,Mechanism: Motor Vehicle Traffic - Unspecified
+MECHANISM_Machinery,Mechanism: Machinery
+"MECHANISM_Natural/environmental, Bites and Stings",Mechanism: Natural/Environmental - Bites and Stings
+"MECHANISM_Natural/environmental, Other",Mechanism: Natural/Environmental - Other
+MECHANISM_Other Specified and Classifiable,Mechanism: Other Specified/Classifiable
+MECHANISM_Overexertion,Mechanism: Overexertion
+"MECHANISM_Pedal Cyclist, Other",Mechanism: Pedal Cyclist - Other
+"MECHANISM_Pedestrian, Other",Mechanism: Pedestrian - Other
+"MECHANISM_Struck By, Against",Mechanism: Struck By/Against
+"MECHANISM_Transport, Other",Mechanism: Transport - Other
+MECHANISM___UNMAPPED__,Mechanism: Unmapped
+TRAUMATYPE_Blunt,Trauma Type: Blunt
+TRAUMATYPE_Burn,Trauma Type: Burn
+TRAUMATYPE_Penetrating,Trauma Type: Penetrating
+TRAUMATYPE___UNMAPPED__,Trauma Type: Unmapped
+INTERFACILITYTRANSFER,Interfacility Transfer
+SBP,SBP
+PULSERATE,Pulse Rate
+TEMPERATURE,Temperature
+RESPIRATORYRATE,Respiratory Rate
+RESPIRATORYASSISTANCE,Respiratory Assistance
+PULSEOXIMETRY,Pulse Oximetry
+SUPPLEMENTALOXYGEN,Supplemental Oxygen
+GCSEYE,GCS Eye
+GCSVERBAL,GCS Verbal
+GCSMOTOR,GCS Motor
+TOTALGCS,Total GCS
+GCSQ_SEDATEDPARALYZED,GCS Qualifier: Sedated/Paralyzed
+GCSQ_EYEOBSTRUCTION,GCS Qualifier: Eye Obstruction
+GCSQ_INTUBATED,GCS Qualifier: Intubated
+GCSQ_VALID,GCS Qualifier: Valid
+GCSQ_NA,GCS Qualifier: Not Applicable
+GCSQ_UK,GCS Qualifier: Unknown
+HOSPITALARRIVALHRS,Hospital Arrival Time: Hours
+HOSPITALARRIVALDAYS,Hospital Arrival Time: Days
+TBIPUPILLARYRESPONSE,TBI Pupillary Response
+age_sq,Age Squared
+age_sbp,Age × SBP
+sbp_diff,EMS-to-Hospital SBP Difference
+hr_diff,EMS-to-Hospital Heart Rate Difference
+rr_diff,EMS-to-Hospital Respiratory Rate Difference
+pulse_ox_diff,EMS-to-Hospital Pulse Oximetry Difference
+gcs_diff,EMS-to-Hospital Total GCS Difference
+ems_sbp_hr_diff,EMS SBP-to-Heart Rate Difference
+sbp_hr_diff,Hospital SBP-to-Heart Rate Difference
+shock_index_ems,EMS Shock Index
+shock_index,Hospital Shock Index
+combined_shock_index,Combined Shock Index
+age_shock_index_ems,Age × EMS Shock Index
+age_shock_index,Age × Hospital Shock Index

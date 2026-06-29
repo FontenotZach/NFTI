@@ -172,6 +172,41 @@ def _confusion_at_threshold(y_true: np.ndarray, y_prob: np.ndarray, threshold: f
     }
 
 
+def calculate_binary_classification_metrics(
+    y_true,
+    y_prob,
+    threshold: float,
+) -> Dict[str, float]:
+    """
+    Compute binary classification metrics at a fixed threshold.
+
+    Returns keys: threshold, n, positives, negatives, prevalence, accuracy,
+    sensitivity, specificity, precision, NPV, F1, AUROC, AUPRC, Brier,
+    TP, TN, FP, FN.
+    """
+    base = evaluate_binary_classifier(y_true, y_prob, threshold=threshold)
+    return {
+        "threshold": float(threshold),
+        "n": base["n"],
+        "positives": base["n_positive"],
+        "negatives": base["n_negative"],
+        "prevalence": base["prevalence"],
+        "accuracy": base["accuracy"],
+        "sensitivity": base["sensitivity"],
+        "specificity": base["specificity"],
+        "precision": base["precision_ppv"],
+        "NPV": base["npv"],
+        "F1": base["f1"],
+        "AUROC": base["auroc"],
+        "AUPRC": base["auprc"],
+        "Brier": base["brier"],
+        "TP": base["tp"],
+        "TN": base["tn"],
+        "FP": base["fp"],
+        "FN": base["fn"],
+    }
+
+
 def evaluate_binary_classifier(
     y_true,
     y_prob,

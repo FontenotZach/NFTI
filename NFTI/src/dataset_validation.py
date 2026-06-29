@@ -23,13 +23,13 @@ def warn_schema_data_coverage(header_info: Dict[str, dict], data_columns: Iterab
     for name, meta in header_info.items():
         if not meta.get("data_type"):
             continue
-        if meta.get("usage") == "1" or meta.get("y") == "1":
+        if meta.get("load") == "1" or meta.get("usage") == "1" or meta.get("y") == "1":
             if name not in data_set:
                 missing_from_data.append(name)
 
     if missing_from_data:
         warnings.warn(
-            "Schema headers with Usage=1 or Y=1 are not present in the data CSV "
+            "Schema headers with Load=1, Usage=1 or Y=1 are not present in the data CSV "
             f"({len(missing_from_data)}): {_format_name_list(sorted(missing_from_data))}",
             UserWarning,
             stacklevel=2,
@@ -87,12 +87,12 @@ def warn_custom_feature_availability(custom_features: Sequence[dict], headers) -
         unpopulated = [
             dep
             for dep in dependencies
-            if header_by_name[dep].usage != "1"
+            if header_by_name[dep].load != "1"
         ]
         if unpopulated:
             warnings.warn(
                 f"Custom feature '{feature_name}' depends on headers that are not "
-                f"populated into TraumaRecord.data (Usage=0): "
+                f"populated into TraumaRecord.data (Load=0): "
                 f"{_format_name_list(unpopulated, limit=10)}",
                 UserWarning,
                 stacklevel=2,

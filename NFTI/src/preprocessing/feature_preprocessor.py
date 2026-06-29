@@ -44,11 +44,12 @@ def _get_feature_column_groups(trauma_dataset) -> Tuple[List[str], List[str], Li
 
 
 def _build_feature_frame(trauma_dataset) -> pd.DataFrame:
-    # Column order must match the order used in TraumaDataset.add_record.
+    # Column order must match the order used in TraumaDataset.add_record, which
+    # populates record.data from headers flagged with load == "1".
     headers = [
         header.name
         for header in trauma_dataset.get_headers()
-        if (header.data_type and header.usage == "1")
+        if (header.data_type and header.load == "1")
     ]
 
     all_rows = [list(record.data.values()) for record in trauma_dataset.get_records()]
@@ -75,7 +76,7 @@ def preprocess_data_for_criterion(
     testing: bool,
 ):
     """
-    Shared preprocessing used by training and ensemble evaluation.
+    Shared preprocessing used by model training and holdout evaluation.
 
     Returns:
       X_binary: (n_samples, n_binary)

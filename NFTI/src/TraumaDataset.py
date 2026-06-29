@@ -26,12 +26,12 @@ class TraumaDataset:
         self.imputation_state = None
         self.cohort_state = None
 
-    def add_header(self, name, ntds_page='', definition='', timing='', data_type='', usage='', one_hot_grouping='', y=''):
+    def add_header(self, name, ntds_page='', definition='', timing='', data_type='', load='', usage='', y=''):
         """
         Add a new Header to the dataset. Only headers with a valid data_type should be added.
         """
         if data_type:
-            self.headers.append(Header(name, ntds_page, definition, timing, data_type, usage, one_hot_grouping, y))
+            self.headers.append(Header(name, ntds_page, definition, timing, data_type, load, usage, y))
 
     @staticmethod
     def load_custom_features(feature_file):
@@ -77,8 +77,8 @@ class TraumaDataset:
                     definition=f"Custom feature: {feature['calculation']}",
                     timing=feature['timing'],
                     data_type=feature['data_type'],
-                    usage="1",  # Marking as "1" since they are used as input
-                    one_hot_grouping="",
+                    load="1",  # Loaded into memory and used as a model input
+                    usage="1",
                     y=""
                 )
 
@@ -96,8 +96,9 @@ class TraumaDataset:
         """
         Add a new TraumaRecord to the dataset. Only populate fields for headers that have a valid data_type.
         """
-        # Filter valid headers
-        valid_headers = [header for header in self.headers if (header.data_type and header.usage == "1")]
+        # Filter valid headers. ``load`` decides what is populated into memory
+        # (record.data); ``usage`` is reserved for downstream training selection.
+        valid_headers = [header for header in self.headers if (header.data_type and header.load == "1")]
         prediction_headers = [header for header in self.headers if (header.data_type and header.y == "1")]
 
         # Missing columns or absent values use NaN; valid zeros are preserved.

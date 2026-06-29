@@ -20,6 +20,14 @@ def _label_counts(y) -> Tuple[int, int]:
     return int((labeled == 1).sum()), int((labeled == 0).sum())
 
 
+def _grid_search_n_jobs() -> int:
+    """Parallel CV workers; avoid nested XGBoost threads and Windows handle limits."""
+    cpu_count = os.cpu_count() or 1
+    if os.name == "nt":
+        return min(4, cpu_count)
+    return cpu_count
+
+
 def _can_train_binary_classifier(y, *, cv_folds: int = 3) -> Optional[str]:
     positive, negative = _label_counts(y)
     if positive == 0 or negative == 0:
@@ -33,6 +41,82 @@ def _can_train_binary_classifier(y, *, cv_folds: int = 3) -> Optional[str]:
             f"(positive={positive}, negative={negative})"
         )
     return None
+
+
+def train_xgboost_classifier(
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    *,
+    grid_search: bool = True,
+    param_grid: Optional[Dict] = None,
+    use_smote: bool = False,
+    random_state: int = 42,
+) -> Tuple[xgb.XGBClassifier, Dict]:
+    """
+    Fit XGBoost on a pre-split training matrix only.
+
+    Returns the fitted model and a hyperparameter summary dict.
+    """
+    skip_reason = _can_train_binary_classifier(y_train)
+    if skip_reason:
+        raise ValueError(skip_reason)
+
+    if param_grid is None:
+        param_grid = {
+            "max_depth": [3, 5],
+            "learning_rate": [0.05, 0.1],
+            "n_estimators": [300],
+            "subsample": [0.8],
+            "colsample_bytree": [0.8],
+            "gamma": [0],
+            "reg_lambda": [1],
+        }
+
+    X_resampled, y_resampled = X_train, y_train
+    if use_smote:
+        smote = SMOTE(random_state=random_state)
+        X_resampled, y_resampled = smote.fit_resample(X_train, y_train)
+
+    xgb_n_jobs = 1 if grid_search else -1
+    xgb_model = xgb.XGBClassifier(
+        objective="binary:logistic",
+        eval_metric="logloss",
+        n_jobs=xgb_n_jobs,
+        random_state=random_state,
+    )
+
+    if grid_search:
+        stratified_kfold = StratifiedKFold(n_splits=3, shuffle=True, random_state=random_state)
+        grid_search_cv = GridSearchCV(
+            estimator=xgb_model,
+            param_grid=param_grid,
+            scoring="roc_auc",
+            cv=stratified_kfold,
+            n_jobs=_grid_search_n_jobs(),
+            verbose=1,
+        )
+        grid_search_cv.fit(X_resampled, y_resampled)
+        best_model = grid_search_cv.best_estimator_
+        hyperparameters = {
+            "grid_search": True,
+            "best_params": dict(grid_search_cv.best_params_),
+            "cv_folds": 3,
+            "scoring": "roc_auc",
+            "use_smote": use_smote,
+            "objective": "binary:logistic",
+            "eval_metric": "logloss",
+        }
+    else:
+        xgb_model.fit(X_resampled, y_resampled)
+        best_model = xgb_model
+        hyperparameters = {
+            "grid_search": False,
+            "use_smote": use_smote,
+            "objective": "binary:logistic",
+            "eval_metric": "logloss",
+        }
+
+    return best_model, hyperparameters
 
 
 def train_xgboost_model(
@@ -92,10 +176,13 @@ def train_xgboost_model(
         stratify=y_resampled,
     )
 
+    # GridSearchCV already parallelizes folds; nested n_jobs=-1 exhausts Windows resources.
+    xgb_n_jobs = 1 if grid_search else -1
+
     xgb_model = xgb.XGBClassifier(
         objective="binary:logistic",
         eval_metric="logloss",
-        n_jobs=-1,
+        n_jobs=xgb_n_jobs,
     )
 
     try:
@@ -106,7 +193,7 @@ def train_xgboost_model(
                 param_grid=param_grid,
                 scoring="roc_auc",
                 cv=stratified_kfold,
-                n_jobs=-1,
+                n_jobs=_grid_search_n_jobs(),
                 verbose=2,
             )
             grid_search_cv.fit(X_train, y_train)

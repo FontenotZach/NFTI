@@ -8,6 +8,10 @@ import pandas as pd
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 from src.data.missing_values import is_missing
+from src.data.human_readable import (
+    append_human_readable_entries,
+    generate_one_hot_entries,
+)
 from src.preprocessing.feature_preprocessor import (
     _get_feature_column_groups,
     get_continuous_columns_for_scaling,
@@ -27,22 +31,39 @@ def _missing_mask(df: pd.DataFrame) -> pd.DataFrame:
     return df.apply(lambda series: series.map(is_missing))
 
 
-def _nan_standard_scale(cont_df: pd.DataFrame, train_mask: np.ndarray) -> Tuple[np.ndarray, StandardScaler]:
-    """Z-score continuous columns using training-set stats; NaN positions stay NaN."""
-    train_df = cont_df.loc[train_mask]
+def _fit_continuous_scaler(train_df: pd.DataFrame) -> StandardScaler:
+    """Fit z-score statistics on training rows only (NaN-aware)."""
     means = train_df.mean(skipna=True).to_numpy(dtype=float)
     stds = train_df.std(skipna=True).to_numpy(dtype=float)
     means = np.where(np.isnan(means), 0.0, means)
     stds = np.where((np.isnan(stds)) | (stds == 0.0), 1.0, stds)
 
-    scaled = cont_df.sub(means, axis=1).div(stds, axis=1).to_numpy(dtype=float)
-
     scaler = StandardScaler()
     scaler.mean_ = means
     scaler.scale_ = stds
     scaler.var_ = stds ** 2
-    scaler.n_features_in_ = len(cont_df.columns)
-    scaler.n_samples_seen_ = int(train_mask.sum())
+    scaler.n_features_in_ = len(train_df.columns)
+    scaler.n_samples_seen_ = int(len(train_df))
+    return scaler
+
+
+def _transform_continuous_with_scaler(
+    cont_df: pd.DataFrame,
+    scaler: StandardScaler,
+) -> np.ndarray:
+    """Apply a scaler fit on training data to any split; original NaNs stay NaN."""
+    means = scaler.mean_
+    stds = scaler.scale_
+    scaled_df = cont_df.sub(means, axis=1).div(stds, axis=1)
+    scaled_df = scaled_df.where(cont_df.notna(), np.nan)
+    return scaled_df.to_numpy(dtype=float)
+
+
+def _nan_standard_scale(cont_df: pd.DataFrame, train_mask: np.ndarray) -> Tuple[np.ndarray, StandardScaler]:
+    """Fit on training rows only, then transform train and test with that fit."""
+    train_df = cont_df.iloc[train_mask]
+    scaler = _fit_continuous_scaler(train_df)
+    scaled = _transform_continuous_with_scaler(cont_df, scaler)
     return scaled, scaler
 
 
@@ -168,16 +189,21 @@ def transform_trauma_dataset(trauma_dataset, *, refit: bool = True):
         cont_df = _records_to_frame_from_base(records, continuous_cols)
         cont_df = cont_df.apply(pd.to_numeric, errors="coerce")
 
-        transformed_cont, scaler = _nan_standard_scale(cont_df, train_mask)
+        train_df = cont_df.iloc[train_mask]
+        scaler = _fit_continuous_scaler(train_df)
+        transformed_cont = _transform_continuous_with_scaler(cont_df, scaler)
 
         for row_index, record in enumerate(records):
             for col_index, column in enumerate(continuous_cols):
                 _store_transformed_value(record, column, transformed_cont[row_index, col_index])
 
         transform_state["continuous_scaler"] = scaler
+        n_train = int(train_mask.sum())
+        n_test = int((~train_mask).sum())
         print(
-            f"Z-score normalized {len(continuous_cols)} continuous columns "
-            f"(fit on {int(train_mask.sum())} training records; base_data kept raw)."
+            f"Z-score normalized {len(continuous_cols)} continuous columns: "
+            f"fit on {n_train} training records only, applied to {n_test} test records "
+            f"without refitting (base_data kept raw)."
         )
     else:
         print("No continuous columns to normalize.")
@@ -190,7 +216,7 @@ def transform_trauma_dataset(trauma_dataset, *, refit: bool = True):
         cat_df = cat_df_raw.fillna(missing_token).astype(str)
 
         encoder = OneHotEncoder(handle_unknown="ignore", sparse_output=False)
-        encoder.fit(cat_df.loc[train_mask])
+        encoder.fit(cat_df.iloc[train_mask])
         encoded = encoder.transform(cat_df).astype(float)
         one_hot_names = list(encoder.get_feature_names_out(categorical_cols))
         encoded = _apply_ohe_missing_mask(
@@ -203,6 +229,9 @@ def transform_trauma_dataset(trauma_dataset, *, refit: bool = True):
         for column in categorical_cols:
             header = header_by_name.get(column)
             if header is not None:
+                # The raw categorical column is removed from record.data and
+                # replaced by its one-hot columns, so it is neither loaded nor used.
+                header.load = "0"
                 header.usage = "0"
 
         for feature_name in one_hot_names:
@@ -214,8 +243,8 @@ def transform_trauma_dataset(trauma_dataset, *, refit: bool = True):
                 definition=f"One-hot encoding of {source_column}",
                 timing=source_header.timing if source_header else "1",
                 data_type="1",
+                load="1",
                 usage="1",
-                one_hot_grouping=source_column,
                 y="",
             )
 
@@ -233,10 +262,24 @@ def transform_trauma_dataset(trauma_dataset, *, refit: bool = True):
 
         transform_state["one_hot_encoder"] = encoder
         transform_state["one_hot_columns"] = one_hot_names
+
+        # Record best-guess human-readable labels for the new one-hot columns
+        # so figures can label them; existing entries are never overwritten.
+        ohe_entries = generate_one_hot_entries(
+            one_hot_names,
+            lambda name: _source_column_for_ohe_name(name, categorical_cols),
+        )
+        added = append_human_readable_entries(ohe_entries)
+
         print(
             f"One-hot encoded {len(categorical_cols)} categorical columns into "
             f"{len(one_hot_names)} binary columns (BIU columns always 0/1)."
         )
+        if added:
+            print(
+                f"Added {added} one-hot label(s) to human_readable_headers.csv "
+                f"(edit to refine)."
+            )
     else:
         print("No categorical columns to one-hot encode.")
 
