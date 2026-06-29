@@ -1,0 +1,35 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+
+title: "NFTI Trauma Triage Machine Learning Analysis Code"
+type: software
+
+authors:
+  - family-names: "Fontenot"
+    given-names: "Zachary Austin"
+    affiliation: "John Peter Smith Hospital Family Medicine Residency"
+    orcid: "https://orcid.org/0009-0005-9647-9398"
+
+repository-code: "https://github.com/FontenotZach/NFTI"
+abstract: "Analysis code supporting the manuscript Machine Learning Prediction of Need for Trauma Intervention from Prehospital Data: A Retrospective National Cohort Study."
+keywords:
+  - trauma triage
+  - machine learning
+  - NFTI
+  - Need for Trauma Intervention
+  - XGBoost
+  - prehospital
+  - trauma registry
+license: "MIT"
+version: "1.0.0"
+date-released: "2026-06-28"
+
+preferred-citation:
+  type: article
+  title: "Machine Learning Prediction of Need for Trauma Intervention from Prehospital Data: A Retrospective National Cohort Study "
+  authors:
+    - family-names: "Fontenot"
+      given-names: "Zachary Austin"
+      affiliation: "John Peter Smith Hospital Family Medicine Residency"
+      orcid: "https://orcid.org/0009-0005-9647-9398"
+  year: 2026
